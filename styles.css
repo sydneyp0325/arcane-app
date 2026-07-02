@@ -114,8 +114,9 @@ input{font-family:inherit}
 
 /* ---------- shell ---------- */
 .app{display:flex;min-height:100vh}
-.side{width:190px;background:var(--side);border-right:1px solid var(--line);padding:10px 10px;display:flex;flex-direction:column;flex-shrink:0;position:sticky;top:0;height:100vh;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin}
-.side::-webkit-scrollbar{width:6px}.side::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.side{width:190px;background:var(--side);border-right:1px solid var(--line);padding:10px 10px;display:flex;flex-direction:column;flex-shrink:0;position:sticky;top:0;height:100vh;overflow:hidden}
+.side-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin}
+.side-scroll::-webkit-scrollbar{width:6px}.side-scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
 .side .brand{padding:4px 8px 10px;font-size:14px}
 .nav-i{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:8px;color:var(--tx2);font-size:13px;font-weight:500;margin-bottom:0;transition:background .1s,color .1s}
 .nav-i i{font-size:16px;width:18px;text-align:center}
@@ -125,7 +126,7 @@ input{font-family:inherit}
 .nav-i.lock:hover{background:transparent;color:var(--tx4)}
 .nav-i .lk{margin-left:auto;font-size:13px;width:auto}
 .nav-sec{color:var(--tx4);font-size:10px;font-weight:700;letter-spacing:1.4px;padding:10px 10px 5px}
-.side-foot{margin-top:auto;padding-top:8px;border-top:1px solid var(--line)}
+.side-foot{flex:none;padding-top:8px;border-top:1px solid var(--line)}
 .agent-chip{display:flex;align-items:center;gap:9px;padding:5px 8px}
 .av{width:32px;height:32px;border-radius:50%;background:rgba(219,179,90,.14);color:var(--gold);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;border:1px solid rgba(219,179,90,.3)}
 .agent-chip .nm{font-size:12.5px;font-weight:500}.agent-chip .rl{font-size:11px;color:var(--tx3)}

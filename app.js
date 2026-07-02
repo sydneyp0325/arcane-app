@@ -362,8 +362,10 @@ function renderApp() {
   $("#root").innerHTML = `
     <div class="app">
       <aside class="side">
-        <div class="brand">${brandHTML()}</div>
-        ${navFor(appMode())}
+        <div class="side-scroll">
+          <div class="brand">${brandHTML()}</div>
+          ${navFor(appMode())}
+        </div>
         <div class="side-foot">
           ${appMode() === "agent" ? `<div class="av-toggle${ME.available_for_calls ? " on" : ""}" id="av-toggle">
             <span class="av-dot"></span>
