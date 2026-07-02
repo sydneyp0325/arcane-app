@@ -149,17 +149,10 @@ function navFor(mode) {
     if (DEV_MANAGING) return `<a class="nav-i" id="dev-back"><i class="ti ti-arrow-left"></i> All agencies</a><div class="nav-sec">MANAGING</div><a class="nav-i" data-route="setup"><i class="ti ti-rocket"></i>Setup</a><a class="nav-i" data-route="agents"><i class="ti ti-users"></i>Agents</a><a class="nav-i" data-route="tenantsettings"><i class="ti ti-building"></i>Agency</a>`;
     return NAV_DEV.map(navItem).join("");
   }
-  // agent app + an AGENCY ADMIN section for agency admins (no separate admin subdomain)
+  // agent app — agency-admin areas now live under Settings → Admin (not the sidebar)
   return NAV_MAIN.map(navItem).join("")
     + (HAS_DOWNLINE ? navItem({ id: "team", icon: "ti-sitemap", label: "Team" }) : "")
-    + `<div class="nav-sec">TOOLS</div>` + NAV_TOOLS.map(navItem).join("")
-    + ((ME.access_level === "admin" || ME.is_platform_admin)
-        ? `<div class="nav-sec">AGENCY ADMIN</div>`
-          + `<a class="nav-i" data-route="setup"><i class="ti ti-rocket"></i>Setup</a>`
-          + `<a class="nav-i" data-route="agents"><i class="ti ti-users"></i>Agents</a>`
-          + `<a class="nav-i" data-route="admintiers"><i class="ti ti-adjustments-dollar"></i>Pricing &amp; tiers</a>`
-          + `<a class="nav-i" data-route="catalog"><i class="ti ti-building-bank"></i>Carriers &amp; products</a>`
-        : "");
+    + `<div class="nav-sec">TOOLS</div>` + NAV_TOOLS.map(navItem).join("");
 }
 
 // ---------------------------------------------------------------- boot (Supabase Auth)
@@ -1029,10 +1022,10 @@ async function applyDisposition(assignmentId, leadId, disp) {
 const PF_TABS = [
   ["profile", "Profile", "ti-user"], ["lead_settings", "Lead Settings", "ti-settings"],
   ["inbound", "Inbound calls", "ti-phone-incoming"],
-  ["tenant", "Agency", "ti-building"],
   ["integrations", "Integrations", "ti-plug"], ["tags", "Tags", "ti-tag"],
   ["receipts", "Lead Receipts", "ti-receipt"], ["subscriptions", "Subscriptions", "ti-refresh"],
   ["preferences", "Preferences", "ti-adjustments"], ["notes", "Notes", "ti-note"],
+  ["admin", "Admin", "ti-shield-lock"],
 ];
 const PF_META = {
   profile: ["Profile", "Manage your account preferences"], lead_settings: ["Lead Settings", "Manage your account preferences"],
@@ -1041,6 +1034,7 @@ const PF_META = {
   integrations: ["Integrations", "Manage your account preferences"], tags: ["Tags", "Organize leads and orders with reusable tags"],
   receipts: ["Lead Receipts", "Your per-lead purchase history"], subscriptions: ["Subscriptions", "Manage your account preferences"],
   preferences: ["Preferences", "Manage your account preferences"], notes: ["Notes", "Private notes for your account"],
+  admin: ["Admin", "Agency settings, agents, pricing & carriers"],
 };
 // every IANA time zone (with GMT offset label); falls back to a core list if the runtime lacks supportedValuesOf
 const PF_TZ = (() => {
@@ -1095,6 +1089,8 @@ function pfFieldsModal(type) {
   $("#ff-x").addEventListener("click", close);
 }
 let PF_TAB = "profile";
+// admin views render into the Admin tab's sub-body when open, else the settings body, else the page
+const adminHost = () => document.getElementById("admin-body") || document.getElementById("pf-body") || $("#content");
 const hourLabel = h => { const ap = h < 12 ? "AM" : "PM"; const hr = h % 12 === 0 ? 12 : h % 12; return `${hr}:00 ${ap}`; };
 const PF_HOURS = Array.from({ length: 24 }, (_, h) => [String(h), hourLabel(h)]);
 // small builders
@@ -1113,16 +1109,32 @@ async function pfPersist(core, settingsPatch, btn) {
 }
 
 function loadProfile() {
-  const c = $("#content"); const [title, sub] = PF_META[PF_TAB];
+  const c = $("#content"); const [title, sub] = PF_META[PF_TAB] || ["Settings", ""];
+  const heroIc = (PF_TABS.find(t => t[0] === PF_TAB) || [, , "ti-settings"])[2];
   c.innerHTML = `
-    <div class="pf-hero"><div class="pf-hero-ic"><i class="ti ${PF_TABS.find(t => t[0] === PF_TAB)[2]}"></i></div><div><div class="pf-hero-t">${title}</div><div class="pf-hero-s">${sub}</div></div></div>
-    <div class="pf-tabs">${PF_TABS.filter(t => t[0] !== "tenant" || ME.access_level === "admin" || ME.is_platform_admin).map(([id, lab, ic]) => `<span class="pf-tab ${PF_TAB === id ? "on" : ""}" data-pf="${id}"><i class="ti ${ic}"></i> ${lab}</span>`).join("")}</div>
+    <div class="pf-hero"><div class="pf-hero-ic"><i class="ti ${heroIc}"></i></div><div><div class="pf-hero-t">${title}</div><div class="pf-hero-s">${sub}</div></div></div>
+    <div class="pf-tabs">${PF_TABS.filter(t => t[0] !== "admin" || ME.access_level === "admin" || ME.is_platform_admin).map(([id, lab, ic]) => `<span class="pf-tab ${PF_TAB === id ? "on" : ""}" data-pf="${id}"><i class="ti ${ic}"></i> ${lab}</span>`).join("")}</div>
     <div id="pf-body"></div>`;
   c.querySelectorAll(".pf-tab").forEach(t => t.addEventListener("click", () => { PF_TAB = t.dataset.pf; loadProfile(); }));
   pfRenderTab();
 }
 function pfRenderTab() {
-  ({ profile: pfProfile, lead_settings: pfLeadSettings, inbound: pfInbound, tenant: pfTenant, integrations: pfIntegrations, tags: pfTags, receipts: pfReceipts, subscriptions: pfSubscriptions, preferences: pfPreferences, notes: pfNotes })[PF_TAB]();
+  ({ profile: pfProfile, lead_settings: pfLeadSettings, inbound: pfInbound, tenant: pfTenant, admin: pfAdmin, integrations: pfIntegrations, tags: pfTags, receipts: pfReceipts, subscriptions: pfSubscriptions, preferences: pfPreferences, notes: pfNotes })[PF_TAB]();
+}
+// Admin hub — one Settings tab, sub-nav for every agency-admin area (renders into #admin-body)
+const ADMIN_SUBS = [
+  ["tenant",     "Agency",              "ti-building",           () => pfTenant()],
+  ["setup",      "Setup",               "ti-rocket",             () => loadSetup()],
+  ["agents",     "Agents",              "ti-users",              () => loadAgents()],
+  ["admintiers", "Pricing & tiers",     "ti-adjustments-dollar", () => loadAdminTiers()],
+  ["catalog",    "Carriers & products", "ti-building-bank",      () => loadCatalogAdmin()],
+];
+let ADMIN_TAB = "tenant";
+function pfAdmin() {
+  const body = $("#pf-body");
+  body.innerHTML = `<div class="pf-tabs" style="margin-bottom:14px">${ADMIN_SUBS.map(([id, lab, ic]) => `<span class="pf-tab ${ADMIN_TAB === id ? "on" : ""}" data-adm="${id}"><i class="ti ${ic}"></i> ${lab}</span>`).join("")}</div><div id="admin-body"></div>`;
+  body.querySelectorAll("[data-adm]").forEach(t => t.addEventListener("click", () => { ADMIN_TAB = t.dataset.adm; pfAdmin(); }));
+  (ADMIN_SUBS.find(s => s[0] === ADMIN_TAB) || ADMIN_SUBS[0])[3]();
 }
 // upload a profile picture / insurance card to Supabase storage, save its URL to settings
 async function pfUpload(file, kind) {
@@ -1312,7 +1324,7 @@ async function pfTenant() {
   t = t || {};
   const s = t.settings || {};
   const who = ME.is_platform_admin ? `<div class="muted2" style="padding:0 16px 4px">Editing <b>${esc(t.brand_name || t.name || t.slug || "tenant")}</b> — switch tenants from the sidebar.</div>` : "";
-  $("#pf-body").innerHTML = `
+  adminHost().innerHTML = `
     <div class="pf-card"><div class="pf-card-h2"><b><i class="ti ti-building"></i> Branding</b><span>Your logo and name shown in the portal header</span></div>
       ${who}
       <div style="padding:14px 16px">
@@ -1430,7 +1442,7 @@ function openCreateAgency() {
 
 // ---- Agents roster (admin console: the agency's agents) ----
 async function loadAgents() {
-  const c = $("#content");
+  const c = adminHost();
   const brand = TENANT?.brand_name || "your agency";
   const head = `<div class="dash-head"><div><div class="page-title">Agents</div><div class="page-sub">Agents in ${esc(brand)}.</div></div><div class="dash-filter-wrap"><button class="btn-gold" id="invite-agent"><i class="ti ti-link"></i> Invite link</button></div></div>`;
   c.innerHTML = head + skelTable(8);
@@ -1467,7 +1479,7 @@ async function setAgentRole(agentId, role, label) {
 
 // ---- Setup / onboarding checklist (admin console) ----
 async function loadSetup() {
-  const c = $("#content");
+  const c = adminHost();
   const tid = activeTenantId();
   let t = (TENANT && TENANT.id === tid) ? TENANT : null;
   if (!t && tid) { try { t = (await sb.from("tenants").select("*").eq("id", tid).maybeSingle()).data; } catch { } }
@@ -1850,7 +1862,7 @@ function loadOrdersList() {
 // ---------------------------------------------------------------- admin: pricing & tiers
 let ADMIN_LEAD_TYPE = null;
 async function loadAdminTiers() {
-  const c = $("#content");
+  const c = adminHost();
   if (ME.access_level !== "admin" && !ME.is_platform_admin) { c.innerHTML = `<div class="coming"><div class="badge"><i class="ti ti-lock"></i></div><b>Admins only</b><div>You don't have access to this page.</div></div>`; return; }
   c.innerHTML = `<div class="page-title">Pricing &amp; tiers</div><div class="page-sub">Configure pricing.</div><div class="coming"><span class="spin"></span></div>`;
   const tid = activeTenantId();
@@ -1862,7 +1874,7 @@ async function loadAdminTiers() {
   renderAdminTiers(tiers, tenant);
 }
 function renderAdminTiers(tiers, tenant) {
-  const c = $("#content");
+  const c = adminHost();
   const inS = "padding:7px 9px";
   const s = (tenant && tenant.settings) || {};
   c.innerHTML = `
@@ -2360,7 +2372,7 @@ async function openDealModal(lead, ctx = {}) {
 // ---------------------------------------------------------------- admin: carriers & products catalog (per agency)
 let CATALOG_ADMIN = { cos: [], prods: [] };
 async function loadCatalogAdmin() {
-  const c = $("#content");
+  const c = adminHost();
   c.innerHTML = `<div class="page-title">Carriers &amp; products</div><div class="page-sub">Loading…</div>${skelTable(6)}`;
   const tid = activeTenantId();
   let cos = [], prods = [];
@@ -2371,7 +2383,7 @@ async function loadCatalogAdmin() {
   renderCatalogAdmin();
 }
 function renderCatalogAdmin() {
-  const c = $("#content");
+  const c = adminHost();
   const { cos, prods } = CATALOG_ADMIN;
   const carriers = cos.map(co => {
     const ps = prods.filter(p => p.company_id === co.id);
