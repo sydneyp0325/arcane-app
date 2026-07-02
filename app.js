@@ -2467,17 +2467,23 @@ function renderCalls() {
       <td><span class="pill ${st.cls}">${st.label}</span></td>
       <td>${fmtDur(cl.talk_sec || cl.duration_sec)}</td>
       <td>${cl.billable ? money(cl.price) : '<span class="muted2">—</span>'}</td>
+      <td>${cl.recording_url ? `<button class="btn-ghost sm rec-btn" data-rec="${cl.id}" title="Play recording"><i class="ti ti-player-play"></i></button>` : '<span class="muted2">—</span>'}</td>
       <td><span class="disp-pick" data-disp="${cl.id}"><span class="dot ${dispDef(cl.disposition).badge}"></span>${dispLabel(cl.disposition)}<i class="ti ti-chevron-down"></i></span></td>
       <td style="text-align:right">${cl.deal_id ? '<span class="pill green">Sold</span>' : `<button class="btn-gold sm" data-sold="${cl.id}"><i class="ti ti-rosette-discount-check"></i> Mark as Sold</button>`}</td>
     </tr>`;
   }).join("");
-  c.innerHTML = head + `<table class="data-tbl"><thead><tr><th>Time</th><th>Caller</th><th>State</th><th>Status</th><th>Talk</th><th>Billable</th><th>Disposition</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  c.innerHTML = head + `<table class="data-tbl"><thead><tr><th>Time</th><th>Caller</th><th>State</th><th>Status</th><th>Talk</th><th>Billable</th><th>Rec</th><th>Disposition</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   c.querySelectorAll("[data-sold]").forEach(b => b.addEventListener("click", () => {
     const cl = CALLS_DATA.find(x => x.id === b.dataset.sold); if (!cl) return;
     const l = cl.lead || {};
     openDealModal({ id: l.id || cl.lead_id, first_name: l.first_name, last_name: l.last_name, phone: l.phone || cl.caller_number, email: l.email }, { callId: cl.id });
   }));
   c.querySelectorAll("[data-disp]").forEach(el => el.addEventListener("click", e => { e.stopPropagation(); openCallDispMenu(el.dataset.disp, el); }));
+  // play the Trackdrive recording inline; keep an open-in-new-tab fallback
+  c.querySelectorAll("[data-rec]").forEach(b => b.addEventListener("click", () => {
+    const cl = CALLS_DATA.find(x => x.id === b.dataset.rec); if (!cl?.recording_url) return;
+    b.parentElement.innerHTML = `<audio controls autoplay preload="none" src="${esc(cl.recording_url)}" style="height:30px;max-width:190px;vertical-align:middle"></audio> <a href="${esc(cl.recording_url)}" target="_blank" rel="noopener" title="Open recording in new tab" style="color:var(--tx3);margin-left:2px"><i class="ti ti-external-link"></i></a>`;
+  }));
 }
 
 // map a disposition -> pipeline stage (mirrors the Leads flow)
