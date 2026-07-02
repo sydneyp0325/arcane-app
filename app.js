@@ -158,6 +158,7 @@ function navFor(mode) {
           + `<a class="nav-i" data-route="setup"><i class="ti ti-rocket"></i>Setup</a>`
           + `<a class="nav-i" data-route="agents"><i class="ti ti-users"></i>Agents</a>`
           + `<a class="nav-i" data-route="admintiers"><i class="ti ti-adjustments-dollar"></i>Pricing &amp; tiers</a>`
+          + `<a class="nav-i" data-route="catalog"><i class="ti ti-building-bank"></i>Carriers &amp; products</a>`
         : "");
 }
 
@@ -441,6 +442,7 @@ function go(route) {
   if (route === "setup") return loadSetup();
   if (route === "tenantsettings") { PF_TAB = "tenant"; return loadProfile(); }
   if (route === "admintiers") return loadAdminTiers();
+  if (route === "catalog") return loadCatalogAdmin();
   const labels = { resources: "Resources", carrier: "Carrier info" };
   c.innerHTML = `<div class="coming"><div class="badge"><i class="ti ti-tools"></i></div><b>${labels[route] || "Page"}</b><div>Coming soon.</div></div>`;
 }
@@ -932,6 +934,7 @@ const smartlistOf = v => dispDef(v).sl;
 // ---------------------------------------------------------------- leads
 const LEAD_TABS = [
   { id: "all", label: "All", sl: null },
+  { id: "inbound", label: "Inbound", sl: null, ch: "inbound_call" },
   { id: "new_lead", label: "New", sl: "new_lead" },
   { id: "called", label: "Called", sl: "called" },
   { id: "follow_up", label: "Follow-Up", sl: "follow_up" },
@@ -953,7 +956,7 @@ async function loadLeads() {
 function renderLeads() {
   const c = $("#content");
   const tabOf = id => LEAD_TABS.find(t => t.id === id) || LEAD_TABS[0];
-  const inTab = (l, t) => t.sl === null || l.smartlist === t.sl;   // "all" tab (sl=null) shows everything
+  const inTab = (l, t) => t.ch ? l.channel === t.ch : (t.sl === null || l.smartlist === t.sl);   // channel tab (Inbound) or disposition smartlist; "all" (sl=null) shows everything
   const counts = {}; LEAD_TABS.forEach(t => counts[t.id] = LEADS_DATA.filter(l => inTab(l, t)).length);
   const rows = LEADS_DATA.filter(l => inTab(l, tabOf(LEADS_TAB)))
     .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));   // newest first
@@ -2270,20 +2273,22 @@ function openApptModal(lead) {
 }
 
 // ---------------------------------------------------------------- deal submission (Sold)
-let DEAL_CARRIERS = null;
+let DEAL_CATALOG = null;
 const DEAL_STATUS = ["underwriting", "approved", "issued", "declined", "cancelled", "chargeback"];
 const FREQ = { monthly: 12, quarterly: 4, semiannually: 2, annually: 1 };
-// Arcane deals use a free-text carrier — offer prior carriers as a datalist for consistency.
-async function loadDealCarriers() {
-  if (DEAL_CARRIERS) return DEAL_CARRIERS;
-  let rows = [];
-  try { rows = (await sb.from("deals").select("carrier").eq("tenant_id", activeTenantId()).not("carrier", "is", null).limit(500)).data || []; } catch { }
-  DEAL_CARRIERS = [...new Set(rows.map(r => (r.carrier || "").trim()).filter(Boolean))].sort();
-  return DEAL_CARRIERS;
+// Carrier + product catalog for the sold-policy popup (policy_companies / policy_products, per tenant).
+async function loadDealCatalog() {
+  if (DEAL_CATALOG) return DEAL_CATALOG;
+  const tid = activeTenantId();
+  let cos = [], prods = [];
+  try { cos   = (await sb.from("policy_companies").select("id,name").eq("tenant_id", tid).eq("is_active", true).order("sort_order").order("name")).data || []; } catch { }
+  try { prods = (await sb.from("policy_products").select("id,name,company_id").eq("tenant_id", tid).eq("is_active", true).order("sort_order").order("name")).data || []; } catch { }
+  DEAL_CATALOG = cos.map(c => ({ ...c, products: prods.filter(p => p.company_id === c.id) }));
+  return DEAL_CATALOG;
 }
 
 async function openDealModal(lead, ctx = {}) {
-  const carriers = await loadDealCarriers();
+  const cos = await loadDealCatalog();
   const today = new Date().toISOString().slice(0, 10);
   const fromCall = !!ctx.callId;
   const m = document.createElement("div"); m.className = "modal-bg";
@@ -2294,9 +2299,12 @@ async function openDealModal(lead, ctx = {}) {
         <div class="field"><label>Policy status *</label><select class="in" id="dl-status">${DEAL_STATUS.map(s => `<option value="${s}">${pretty(s)}</option>`).join("")}</select></div>
         <div class="field"><label>Phone</label><input class="in" value="${esc(lead.phone || "")}" disabled></div>
         <div class="field"><label>Email</label><input class="in" value="${esc(lead.email || "")}" disabled></div>
-        <div class="field"><label>Carrier *</label><input class="in" id="dl-carrier" list="dl-carrier-list" placeholder="Carrier name"><datalist id="dl-carrier-list">${carriers.map(c => `<option value="${esc(c)}"></option>`).join("")}</datalist></div>
+        <div class="field"><label>Carrier *</label><select class="in" id="dl-carrier"><option value="">${cos.length ? "Select carrier" : "No carriers set up"}</option>${cos.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join("")}</select></div>
+        <div class="field"><label>Product *</label><select class="in" id="dl-product"><option value="">Select carrier first</option></select></div>
         <div class="field"><label>Premium frequency</label><select class="in" id="dl-freq"><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="semiannually">Semi-annually</option><option value="annually">Annually</option></select></div>
         <div class="field"><label>Premium *</label><input class="in" id="dl-premium" type="number" step="0.01" placeholder="0.00"></div>
+        <div class="field"><label>Face amount</label><input class="in" id="dl-face" type="number" step="0.01" placeholder="0.00"></div>
+        <div class="field"><label>Policy number</label><input class="in" id="dl-policynum" placeholder="Optional"></div>
         <div class="field"><label>Sold on *</label><input class="in" id="dl-sold" type="date" value="${today}"></div>
         <div class="field"><label>Effective date</label><input class="in" id="dl-eff" type="date"></div>
       </div>
@@ -2307,16 +2315,28 @@ async function openDealModal(lead, ctx = {}) {
   const close = () => m.remove();
   m.addEventListener("click", e => { if (e.target === m) close(); });
   $("#dl-x").addEventListener("click", close); $("#dl-cancel").addEventListener("click", close);
+  // carrier -> product cascade
+  $("#dl-carrier").addEventListener("change", e => {
+    const c = cos.find(x => x.id === e.target.value);
+    const opts = c && c.products.length
+      ? `<option value="">Select product</option>` + c.products.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("")
+      : `<option value="">${c ? "No products for this carrier" : "Select carrier first"}</option>`;
+    $("#dl-product").innerHTML = opts;
+  });
   $("#dl-save").addEventListener("click", async () => {
     const name = $("#dl-name").value.trim(), premium = parseFloat($("#dl-premium").value);
-    const carrier = $("#dl-carrier").value.trim();
+    const carrierCo = cos.find(x => x.id === $("#dl-carrier").value);
+    const productId = $("#dl-product").value || null;
     if (!name) { $("#dl-err").textContent = "Insured name is required."; return; }
-    if (!carrier) { $("#dl-err").textContent = "Carrier is required."; return; }
+    if (!carrierCo) { $("#dl-err").textContent = "Select a carrier."; return; }
     if (!premium || premium < 0) { $("#dl-err").textContent = "Enter a valid premium."; return; }
     const annual = Math.round(premium * (FREQ[$("#dl-freq").value] || 12) * 100) / 100;
     const payload = {
       tenant_id: activeTenantId(),
-      client_name: name, annual_premium: annual, carrier,
+      client_name: name, annual_premium: annual,
+      carrier: carrierCo.name, company_id: carrierCo.id, product_id: productId,
+      coverage_amount: parseFloat($("#dl-face").value) || null,
+      policy_number: $("#dl-policynum").value.trim() || null,
       status: $("#dl-status").value,
       effective_date: $("#dl-eff").value || null,
       sale_date: $("#dl-sold").value || today,
@@ -2331,12 +2351,82 @@ async function openDealModal(lead, ctx = {}) {
       try { await sb.from("calls").update({ deal_id: dealRow?.id || null, disposition: "sold", pipeline_stage: "deal_closed" }).eq("id", ctx.callId); } catch { }
       if (ROUTE === "calls") loadCalls();
     }
-    DEAL_CARRIERS = null; // refresh datalist next open
     close();
     confetti(); toast(`Deal logged — ${money(annual)} AP 🎉`);
     if (LEAD_PANEL && LEAD_PANEL.id === lead.id) { try { LEAD_PANEL = (await sb.from("leads").select("*").eq("id", lead.id).single()).data; LEAD_PANEL._asn = lead._asn; } catch { } renderLeadPanel(); }
   });
 }
+
+// ---------------------------------------------------------------- admin: carriers & products catalog (per agency)
+let CATALOG_ADMIN = { cos: [], prods: [] };
+async function loadCatalogAdmin() {
+  const c = $("#content");
+  c.innerHTML = `<div class="page-title">Carriers &amp; products</div><div class="page-sub">Loading…</div>${skelTable(6)}`;
+  const tid = activeTenantId();
+  let cos = [], prods = [];
+  try { cos   = (await sb.from("policy_companies").select("*").eq("tenant_id", tid).order("sort_order").order("name")).data || []; } catch { }
+  try { prods = (await sb.from("policy_products").select("*").eq("tenant_id", tid).order("sort_order").order("name")).data || []; } catch { }
+  CATALOG_ADMIN = { cos, prods };
+  DEAL_CATALOG = null; // invalidate the sold-popup cache so edits show immediately
+  renderCatalogAdmin();
+}
+function renderCatalogAdmin() {
+  const c = $("#content");
+  const { cos, prods } = CATALOG_ADMIN;
+  const carriers = cos.map(co => {
+    const ps = prods.filter(p => p.company_id === co.id);
+    return `<div class="panel" style="margin-bottom:12px;padding:14px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <b style="font-size:15px;${co.is_active ? "" : "opacity:.5;text-decoration:line-through"}">${esc(co.name)}</b>
+        ${co.is_active ? "" : '<span class="pill grey">Inactive</span>'}
+        <div style="flex:1"></div>
+        <button class="btn-ghost sm" data-cat="rename-co" data-id="${co.id}" title="Rename"><i class="ti ti-pencil"></i></button>
+        <button class="btn-ghost sm" data-cat="toggle-co" data-id="${co.id}" data-active="${co.is_active}">${co.is_active ? "Deactivate" : "Activate"}</button>
+        <button class="btn-ghost sm" data-cat="del-co" data-id="${co.id}" title="Delete carrier"><i class="ti ti-trash"></i></button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+        ${ps.length ? ps.map(p => `<span class="pill ${p.is_active ? "blue" : "grey"}" style="display:inline-flex;align-items:center;gap:6px">${esc(p.name)}<i class="ti ti-x" data-cat="del-prod" data-id="${p.id}" style="cursor:pointer;opacity:.7"></i></span>`).join("") : '<span class="muted2">No products yet</span>'}
+      </div>
+      <div style="display:flex;gap:6px">
+        <input class="in" id="prodin-${co.id}" placeholder="Add product…" style="max-width:300px">
+        <button class="btn-ghost sm" data-cat="add-prod" data-id="${co.id}"><i class="ti ti-plus"></i> Add</button>
+      </div>
+    </div>`;
+  }).join("");
+  c.innerHTML = `<div class="page-title">Carriers &amp; products</div><div class="page-sub">Carriers and products your agents pick when logging a sold policy — applies to this agency only.</div>
+    <div class="panel" style="padding:14px;margin-bottom:16px;display:flex;gap:8px;align-items:center">
+      <input class="in" id="cat-newco" placeholder="New carrier name…" style="max-width:340px">
+      <button class="btn-gold" data-cat="add-co"><i class="ti ti-plus"></i> Add carrier</button>
+    </div>
+    ${carriers || '<div class="coming"><div class="badge"><i class="ti ti-building-bank"></i></div><b>No carriers yet</b><div>Add your first carrier above.</div></div>'}`;
+  c.querySelectorAll("[data-cat]").forEach(b => b.addEventListener("click", () => catAction(b.dataset.cat, b.dataset.id, b)));
+}
+async function catAction(action, id, btn) {
+  const tid = activeTenantId();
+  try {
+    if (action === "add-co") {
+      const name = $("#cat-newco").value.trim(); if (!name) return;
+      const { error } = await sb.from("policy_companies").insert({ tenant_id: tid, name }); if (error) throw error;
+    } else if (action === "add-prod") {
+      const name = $("#prodin-" + id).value.trim(); if (!name) return;
+      const { error } = await sb.from("policy_products").insert({ tenant_id: tid, company_id: id, name }); if (error) throw error;
+    } else if (action === "del-co") {
+      if (!confirm("Delete this carrier and all its products?")) return;
+      const { error } = await sb.from("policy_companies").delete().eq("id", id); if (error) throw error;
+    } else if (action === "del-prod") {
+      const { error } = await sb.from("policy_products").delete().eq("id", id); if (error) throw error;
+    } else if (action === "toggle-co") {
+      const { error } = await sb.from("policy_companies").update({ is_active: btn.dataset.active !== "true" }).eq("id", id); if (error) throw error;
+    } else if (action === "rename-co") {
+      const co = CATALOG_ADMIN.cos.find(x => x.id === id);
+      const name = prompt("Carrier name", co?.name || ""); if (name == null || !name.trim()) return;
+      const { error } = await sb.from("policy_companies").update({ name: name.trim() }).eq("id", id); if (error) throw error;
+    }
+    toast("Saved");
+  } catch (e) { toast(e.message || "Couldn't save (admins only)"); }
+  loadCatalogAdmin();
+}
+window.loadCatalogAdmin = loadCatalogAdmin;
 
 // ---------------------------------------------------------------- team / downline reporting
 let TEAM_DATA = [];
