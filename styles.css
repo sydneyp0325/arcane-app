@@ -114,18 +114,19 @@ input{font-family:inherit}
 
 /* ---------- shell ---------- */
 .app{display:flex;min-height:100vh}
-.side{width:190px;background:var(--side);border-right:1px solid var(--line);padding:14px 12px;display:flex;flex-direction:column;flex-shrink:0;position:sticky;top:0;height:100vh}
-.side .brand{padding:4px 8px 16px;font-size:14px}
-.nav-i{display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:8px;color:var(--tx2);font-size:13px;font-weight:500;margin-bottom:1px;transition:background .1s,color .1s}
-.nav-i i{font-size:17px;width:19px;text-align:center}
+.side{width:190px;background:var(--side);border-right:1px solid var(--line);padding:10px 10px;display:flex;flex-direction:column;flex-shrink:0;position:sticky;top:0;height:100vh;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin}
+.side::-webkit-scrollbar{width:6px}.side::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.side .brand{padding:4px 8px 10px;font-size:14px}
+.nav-i{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:8px;color:var(--tx2);font-size:13px;font-weight:500;margin-bottom:0;transition:background .1s,color .1s}
+.nav-i i{font-size:16px;width:18px;text-align:center}
 .nav-i:hover{background:rgba(255,255,255,.045);color:var(--tx)}
 .nav-i.active{background:var(--gold-grad);color:var(--gold-ink);font-weight:600}
 .nav-i.lock{color:var(--tx4);cursor:default}
 .nav-i.lock:hover{background:transparent;color:var(--tx4)}
 .nav-i .lk{margin-left:auto;font-size:13px;width:auto}
-.nav-sec{color:var(--tx4);font-size:10px;font-weight:700;letter-spacing:1.4px;padding:16px 11px 7px}
-.side-foot{margin-top:auto;padding-top:12px;border-top:1px solid var(--line)}
-.agent-chip{display:flex;align-items:center;gap:9px;padding:7px 8px}
+.nav-sec{color:var(--tx4);font-size:10px;font-weight:700;letter-spacing:1.4px;padding:10px 10px 5px}
+.side-foot{margin-top:auto;padding-top:8px;border-top:1px solid var(--line)}
+.agent-chip{display:flex;align-items:center;gap:9px;padding:5px 8px}
 .av{width:32px;height:32px;border-radius:50%;background:rgba(219,179,90,.14);color:var(--gold);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;border:1px solid rgba(219,179,90,.3)}
 .agent-chip .nm{font-size:12.5px;font-weight:500}.agent-chip .rl{font-size:11px;color:var(--tx3)}
 .nav-i.settings{color:var(--gold);font-weight:600;margin-top:2px}
@@ -497,7 +498,7 @@ textarea.in{resize:vertical;min-height:64px;line-height:1.5}
 .dfp-pill.on{background:var(--gold-grad);color:var(--gold-ink);font-weight:600;border-color:transparent}
 
 /* ---------- inbound calls + wallet + availability (2026-07-01) ---------- */
-.av-toggle{display:flex;align-items:center;gap:9px;box-sizing:border-box;width:100%;padding:10px 12px;margin:6px 0 10px;border-radius:11px;background:var(--card-2);border:1px solid var(--line);font-size:12.5px;color:var(--tx2);transition:background .15s,border-color .15s}
+.av-toggle{display:flex;align-items:center;gap:9px;box-sizing:border-box;width:100%;padding:7px 11px;margin:4px 0 6px;border-radius:10px;background:var(--card-2);border:1px solid var(--line);font-size:12.5px;color:var(--tx2);transition:background .15s,border-color .15s}
 .av-toggle.on{background:rgba(99,195,154,.08);border-color:rgba(99,195,154,.32);color:var(--tx)}
 .av-toggle .av-dot{width:7px;height:7px;border-radius:50%;background:var(--tx3);flex:none;transition:.15s}
 .av-toggle.on .av-dot{background:var(--green);box-shadow:0 0 0 3px rgba(99,195,154,.18)}
