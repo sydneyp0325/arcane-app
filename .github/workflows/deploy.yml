@@ -10,11 +10,12 @@ permissions:
   pages: write
   id-token: write
 
-# Only one deploy at a time; a new push cancels any stuck/in-progress one
-# (this is what stops the "Deployment failed, try again later" pile-ups).
+# One deploy at a time, but NEVER cancel an in-flight deployment — canceling mid-publish
+# leaves Pages half-deployed and makes the next run fail "Deployment failed, try again later".
+# (This matches GitHub's official Pages workflow.)
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
