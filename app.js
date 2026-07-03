@@ -193,6 +193,12 @@ async function loadMe() {
     try { const o = JSON.parse(_onb); const p = {}; if (o.npn) p.npn = o.npn; if (o.states?.length) p.licensed_states = o.states; if (o.phone) { p.public_phone = o.phone; p.forward_number = o.phone; } if (Object.keys(p).length) await sb.from("agents").update(p).eq("id", ME.id); } catch { }
     localStorage.removeItem("arcane_onb");
   }
+  // deep-link from Arcane HQ: ?mode=dev&manage=<tenant_id> drops a platform admin straight into that tenant
+  const manageId = new URLSearchParams(location.search).get("manage");
+  if (manageId && ME?.is_platform_admin && appMode() === "dev") {
+    history.replaceState({}, "", location.pathname + "?mode=dev");
+    return enterAgency(manageId);
+  }
   renderApp();
   go(defaultRoute());
   // returning from Stripe checkout?
