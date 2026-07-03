@@ -506,6 +506,12 @@ textarea.in{resize:vertical;min-height:64px;line-height:1.5}
 .lp-tag-add .in{flex:1}
 .lp-note{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 14px;margin-bottom:9px}
 .lp-note .meta{font-size:11px;color:var(--tx3);margin-top:5px}
+.lp-note-acts{margin-left:6px}
+.lp-note-acts a{color:var(--gold-2);cursor:pointer}
+.lp-note-acts a:hover{text-decoration:underline}
+tr.task-done td{opacity:.5}
+tr.task-done td:nth-child(3){text-decoration:line-through}
+.task-cbx{width:16px;height:16px;cursor:pointer;accent-color:var(--gold)}
 .lp-row{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer}
 .lp-row:hover{background:rgba(255,255,255,.03)}
 .lp-row i{color:var(--gold);font-size:18px}

@@ -1863,20 +1863,37 @@ async function loadTasks() {
   try { tasks = (await sb.from("tasks").select("*").eq("agent_id", ME.id).order("due_at", { ascending: true })).data || []; } catch { tasks = []; }
   renderTasks(tasks);
 }
+const taskDone = s => ["completed", "done", "cancelled"].includes((s || "").toLowerCase());
 function renderTasks(tasks) {
   const c = $("#content");
   c.innerHTML = `
     <div class="pagehead"><div><div class="page-title">Tasks</div><div class="page-sub">${tasks.length} task${tasks.length !== 1 ? "s" : ""}.</div></div><div style="flex:1"></div><button class="btn-gold" id="new-task"><i class="ti ti-plus"></i> New task</button></div>
     <div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Due</th><th>Task</th><th>Priority</th><th>Status</th></tr></thead>
-      <tbody>${tasks.length ? tasks.map(t => `<tr>
+      <thead><tr><th></th><th>Due</th><th>Task</th><th>Priority</th><th>Status</th><th></th></tr></thead>
+      <tbody>${tasks.length ? tasks.map(t => `<tr class="${taskDone(t.status) ? "task-done" : ""}">
+        <td><input type="checkbox" class="task-cbx" data-task="${t.id}" ${taskDone(t.status) ? "checked" : ""}></td>
         <td class="num" style="color:var(--tx3)">${t.due_at ? new Date(t.due_at).toLocaleDateString() : "—"}</td>
         <td style="font-weight:500">${esc(t.title || t.task || "—")}</td>
         <td style="text-transform:capitalize">${esc(t.priority || "normal")}</td>
         <td style="text-transform:capitalize">${esc(t.status || "open")}</td>
-      </tr>`).join("") : `<tr><td colspan="4" style="text-align:center;color:var(--tx3);padding:32px">No tasks yet.</td></tr>`}</tbody>
+        <td style="text-align:right"><button class="btn-ghost sm" data-deltask="${t.id}" title="Delete"><i class="ti ti-trash"></i></button></td>
+      </tr>`).join("") : `<tr><td colspan="6" style="text-align:center;color:var(--tx3);padding:32px">No tasks yet.</td></tr>`}</tbody>
     </table></div>`;
   $("#new-task").addEventListener("click", openTaskModal);
+  c.querySelectorAll(".task-cbx").forEach(cb => cb.addEventListener("change", () => toggleTask(cb.dataset.task, cb.checked)));
+  c.querySelectorAll("[data-deltask]").forEach(b => b.addEventListener("click", () => deleteTask(b.dataset.deltask)));
+}
+async function toggleTask(id, done) {
+  try { await sb.from("tasks").update({ status: done ? "completed" : "open", updated_at: new Date().toISOString() }).eq("id", id); }
+  catch (e) { toast(e.message); return; }
+  if (ROUTE === "tasks") loadTasks();
+  else if (document.querySelector(".lead-panel") && LP_TAB === "tasks") lpRenderTab();
+}
+async function deleteTask(id) {
+  if (!confirm("Delete this task?")) return;
+  try { await sb.from("tasks").delete().eq("id", id); } catch (e) { toast(e.message); return; }
+  if (ROUTE === "tasks") loadTasks();
+  else if (document.querySelector(".lead-panel") && LP_TAB === "tasks") lpRenderTab();
 }
 let TASK_LEAD = null;
 function openTaskModal(presetLead = null) {
@@ -1926,10 +1943,14 @@ function openTaskModal(presetLead = null) {
 
   $("#tm-create").addEventListener("click", async () => {
     const title = $("#tm-title").value.trim(); if (!title) return;
-    const row = { agent_id: ME.id, title, due_at: $("#tm-due").value || null, priority: $("#tm-pri").value, status: "open", notes: $("#tm-notes").value.trim() || null };
+    const on = k => m.querySelector(`[data-tn="${k}"]`)?.classList.contains("on") || false;
+    const notify = { sms: on("sms"), email: on("email"), app: on("app") };
+    const row = { agent_id: ME.id, title, due_at: $("#tm-due").value || null, priority: $("#tm-pri").value, status: "open", notes: $("#tm-notes").value.trim() || null, notify };
     if (TASK_LEAD) row.lead_id = TASK_LEAD.id;
-    try { await sb.from("tasks").insert(row); } catch (e) { }
-    close(); loadTasks();
+    const { error } = await sb.from("tasks").insert(row);
+    if (error) { toast(error.message); return; }
+    close();
+    if (document.querySelector(".lead-panel") && LP_TAB === "tasks") lpRenderTab(); else loadTasks();
   });
 }
 
@@ -2234,6 +2255,8 @@ async function lpRenderTab() {
     let t = []; try { t = (await sb.from("tasks").select("*").eq("lead_id", l.id).order("due_at", { ascending: true })).data || []; } catch { }
     b.innerHTML = lpTasks(t);
     b.querySelector("#lp-newtask")?.addEventListener("click", () => openTaskModal(lpLeadObj()));
+    b.querySelectorAll(".task-cbx").forEach(cb => cb.addEventListener("change", () => toggleTask(cb.dataset.task, cb.checked)));
+    b.querySelectorAll("[data-deltask]").forEach(x => x.addEventListener("click", () => deleteTask(x.dataset.deltask)));
     return;
   }
   if (LP_TAB === "notes") {
@@ -2242,6 +2265,8 @@ async function lpRenderTab() {
     try { n = (await sb.from("lead_notes").select("*").eq("lead_id", l.id).order("created_at", { ascending: false })).data || []; } catch { }
     b.innerHTML = lpNotes(n);
     b.querySelector("#lp-addnote")?.addEventListener("click", lpAddNote);
+    b.querySelectorAll("[data-delnote]").forEach(x => x.addEventListener("click", () => lpDeleteNote(x.dataset.delnote)));
+    b.querySelectorAll("[data-editnote]").forEach(x => x.addEventListener("click", () => lpEditNote(x.dataset.editnote)));
     return;
   }
 }
@@ -2338,17 +2363,33 @@ function lpRemoveTag(t) {
 
 function lpTasks(tasks) {
   return `<div class="pagehead"><div style="font-weight:600;font-size:14px">Tasks for this lead</div><div style="flex:1"></div><button class="btn-gold" id="lp-newtask" style="padding:7px 13px"><i class="ti ti-plus"></i> New task</button></div>
-    ${tasks.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Due</th><th>Task</th><th>Priority</th><th>Status</th></tr></thead><tbody>${tasks.map(t => `<tr><td class="num" style="color:var(--tx3)">${t.due_at ? new Date(t.due_at).toLocaleDateString() : "—"}</td><td>${esc(t.title || t.task || "—")}</td><td style="text-transform:capitalize">${esc(t.priority || "normal")}</td><td style="text-transform:capitalize">${esc(t.status || "open")}</td></tr>`).join("")}</tbody></table></div>` : `<div class="coming" style="padding:40px"><div class="muted2">No tasks for this lead yet.</div></div>`}`;
+    ${tasks.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th>Due</th><th>Task</th><th>Priority</th><th>Status</th><th></th></tr></thead><tbody>${tasks.map(t => `<tr class="${taskDone(t.status) ? "task-done" : ""}"><td><input type="checkbox" class="task-cbx" data-task="${t.id}" ${taskDone(t.status) ? "checked" : ""}></td><td class="num" style="color:var(--tx3)">${t.due_at ? new Date(t.due_at).toLocaleDateString() : "—"}</td><td>${esc(t.title || t.task || "—")}</td><td style="text-transform:capitalize">${esc(t.priority || "normal")}</td><td style="text-transform:capitalize">${esc(t.status || "open")}</td><td style="text-align:right"><button class="btn-ghost sm" data-deltask="${t.id}" title="Delete"><i class="ti ti-trash"></i></button></td></tr>`).join("")}</tbody></table></div>` : `<div class="coming" style="padding:40px"><div class="muted2">No tasks for this lead yet.</div></div>`}`;
 }
 
 function lpNotes(notes) {
   return `<div style="display:flex;gap:8px;margin-bottom:14px"><textarea class="in" id="lp-note-input" placeholder="Add a note…" style="flex:1"></textarea><button class="btn-gold" id="lp-addnote" style="align-self:flex-start"><i class="ti ti-plus"></i> Add</button></div>
-    ${notes.length ? notes.map(n => `<div class="lp-note"><div>${esc(n.body)}</div><div class="meta">${esc(n.agent_name || "")}${n.created_at ? " · " + new Date(n.created_at).toLocaleString() : ""}</div></div>`).join("") : `<div class="coming" style="padding:30px"><div class="muted2">No notes yet.</div></div>`}`;
+    ${notes.length ? notes.map(n => `<div class="lp-note" data-note="${n.id}"><div class="lp-note-body">${esc(n.body)}</div><div class="meta">${esc(n.agent_name || "")}${n.created_at ? " · " + new Date(n.created_at).toLocaleString() : ""}${n.agent_id === ME.id ? ` <span class="lp-note-acts"><a data-editnote="${n.id}">Edit</a> · <a data-delnote="${n.id}">Delete</a></span>` : ""}</div></div>`).join("") : `<div class="coming" style="padding:30px"><div class="muted2">No notes yet.</div></div>`}`;
 }
 async function lpAddNote() {
   const ta = $("#lp-note-input"); const body = (ta?.value || "").trim(); if (!body) return;
   try { await sb.from("lead_notes").insert({ lead_id: LEAD_PANEL.id, agent_id: ME.id, body }); } catch (e) { alert(e.message); return; }
   lpRenderTab();
+}
+async function lpDeleteNote(id) {
+  if (!confirm("Delete this note?")) return;
+  try { await sb.from("lead_notes").delete().eq("id", id); } catch (e) { alert(e.message); return; }
+  lpRenderTab();
+}
+function lpEditNote(id) {
+  const wrap = document.querySelector(`.lp-note[data-note="${id}"] .lp-note-body`); if (!wrap) return;
+  const cur = wrap.textContent;
+  wrap.innerHTML = `<textarea class="in lp-note-edit" style="width:100%">${esc(cur)}</textarea><div style="margin-top:6px;display:flex;gap:6px"><button class="btn-gold sm" id="lp-note-save">Save</button><button class="btn-ghost sm" id="lp-note-cancel">Cancel</button></div>`;
+  wrap.querySelector("#lp-note-cancel").onclick = lpRenderTab;
+  wrap.querySelector("#lp-note-save").onclick = async () => {
+    const body = wrap.querySelector(".lp-note-edit").value.trim(); if (!body) return;
+    try { await sb.from("lead_notes").update({ body }).eq("id", id); } catch (e) { alert(e.message); return; }
+    lpRenderTab();
+  };
 }
 
 function lpSupport() {
