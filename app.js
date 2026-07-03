@@ -2011,15 +2011,20 @@ async function loadAdminTiers() {
   try { tiers = (await sb.from("lead_tiers").select("*, lead_types(name)").eq("tenant_id", tid).order("sort_order")).data || []; } catch (e) { }
   try { tenant = (TENANT && TENANT.id === tid) ? TENANT : (await sb.from("tenants").select("id,slug,settings").eq("id", tid).maybeSingle()).data; } catch (e) { }
   ADMIN_LEAD_TYPE = tiers[0]?.lead_type_id || null;
-  if (!ADMIN_LEAD_TYPE) { try { ADMIN_LEAD_TYPE = (await sb.from("lead_types").select("id").eq("tenant_id", tid).order("sort_order").limit(1).maybeSingle()).data?.id || null; } catch (e) { } }
+  // lead types are now a GLOBAL platform catalog (tenant_id is null)
+  if (!ADMIN_LEAD_TYPE) { try { ADMIN_LEAD_TYPE = (await sb.from("lead_types").select("id").is("tenant_id", null).order("sort_order").limit(1).maybeSingle()).data?.id || null; } catch (e) { } }
+  // a fresh tenant with no tiers yet — seed the standard set, then reload
+  if (!tiers.length) { try { await sb.rpc("seed_tenant_tiers", { p_tenant: tid }); tiers = (await sb.from("lead_tiers").select("*, lead_types(name)").eq("tenant_id", tid).order("sort_order")).data || []; if (tiers[0]) ADMIN_LEAD_TYPE = tiers[0].lead_type_id; } catch (e) { } }
   renderAdminTiers(tiers, tenant);
 }
 function renderAdminTiers(tiers, tenant) {
   const c = adminHost();
   const inS = "padding:7px 9px";
   const s = (tenant && tenant.settings) || {};
+  const plat = !!ME.is_platform_admin;   // only the platform can add tiers / rename / change channel
+  const ro = plat ? "" : "disabled";
   c.innerHTML = `
-    <div class="pagehead"><div><div class="page-title">Pricing &amp; tiers</div><div class="page-sub">Set your inbound call price and lead-tier pricing.</div></div><div style="flex:1"></div><button class="btn-soft" id="add-tier"><i class="ti ti-plus"></i> Add tier</button></div>
+    <div class="pagehead"><div><div class="page-title">Pricing &amp; tiers</div><div class="page-sub">Set your inbound call price and lead-tier pricing.</div></div><div style="flex:1"></div>${plat ? `<button class="btn-soft" id="add-tier"><i class="ti ti-plus"></i> Add tier</button>` : ""}</div>
     <div class="pf-card" style="max-width:540px;margin:2px 0 18px"><div class="pf-card-h2"><b><i class="ti ti-phone-incoming"></i> Inbound call pricing</b><span>What a billable inbound call costs an agent</span></div>
       <div class="pf-grid">
         ${_f("Call price ($)", _i("cp-price", s.call_price, "e.g. 30", "number"))}${_f("Billable after (seconds)", _i("cp-threshold", s.billable_threshold_sec ?? 90, "90", "number"))}
@@ -2031,16 +2036,17 @@ function renderAdminTiers(tiers, tenant) {
     <div class="tbl-wrap"><div style="overflow-x:auto"><table class="tbl">
       <thead><tr><th>Tier</th><th>Type</th><th class="num">Max age (days)</th><th class="num">Price</th><th class="num">Agents at once</th><th></th></tr></thead>
       <tbody>${tiers.length ? tiers.map(t => `<tr data-id="${t.id}" data-type="${t.lead_type_id}">
-        <td><input class="in tr-name" value="${esc(t.name)}" style="width:130px;${inS}"></td>
-        <td><select class="in tr-channel" style="width:110px;${inS}"><option value="realtime" ${t.channel === "realtime" ? "selected" : ""}>Realtime</option><option value="aged" ${t.channel !== "realtime" ? "selected" : ""}>Aged</option></select></td>
+        <td><input class="in tr-name" value="${esc(t.name)}" style="width:130px;${inS}" ${ro}></td>
+        <td><select class="in tr-channel" style="width:110px;${inS}" ${ro}><option value="realtime" ${t.channel === "realtime" ? "selected" : ""}>Realtime</option><option value="aged" ${t.channel !== "realtime" ? "selected" : ""}>Aged</option></select></td>
         <td class="num"><input class="in tr-age" type="number" value="${t.max_age_days}" style="width:94px;${inS}"></td>
         <td class="num"><input class="in tr-price" type="number" step="0.01" value="${t.price}" style="width:94px;${inS}"></td>
-        <td class="num"><input class="in tr-conc" type="number" min="1" value="${t.max_concurrent_owners}" style="width:80px;${inS}"></td>
+        <td class="num"><input class="in tr-conc" type="number" min="1" value="${t.cap ?? ""}" style="width:80px;${inS}" ${ro}></td>
         <td><button class="btn-gold" style="padding:7px 14px" data-save>Save</button></td>
-      </tr>`).join("") : `<tr><td colspan="6" style="text-align:center;color:var(--tx3);padding:34px">No tiers yet — run migrations 162–164, then add one.</td></tr>`}</tbody>
-    </table></div></div>`;
+      </tr>`).join("") : `<tr><td colspan="6" style="text-align:center;color:var(--tx3);padding:34px">No tiers yet.</td></tr>`}</tbody>
+    </table></div></div>
+    ${plat ? "" : `<div class="muted2" style="margin-top:10px">You can edit <b>age bands</b> and <b>prices</b>. Tier names, channel, and the lead catalog are managed by Arcane.</div>`}`;
   c.querySelectorAll("[data-save]").forEach(b => b.addEventListener("click", () => saveTier(b)));
-  $("#add-tier").addEventListener("click", openTierModal);
+  $("#add-tier")?.addEventListener("click", openTierModal);
   $("#cp-save")?.addEventListener("click", e => saveCallPricing(tenant?.id || activeTenantId(), s, e.target));
 }
 async function saveCallPricing(tenantId, curSettings, btn) {
@@ -2453,8 +2459,8 @@ async function loadDealCatalog() {
   if (DEAL_CATALOG) return DEAL_CATALOG;
   const tid = activeTenantId();
   let cos = [], prods = [];
-  try { cos   = (await sb.from("policy_companies").select("id,name").eq("tenant_id", tid).eq("is_active", true).order("sort_order").order("name")).data || []; } catch { }
-  try { prods = (await sb.from("policy_products").select("id,name,company_id").eq("tenant_id", tid).eq("is_active", true).order("sort_order").order("name")).data || []; } catch { }
+  try { cos   = (await sb.from("policy_companies").select("id,name").eq("is_active", true).order("sort_order").order("name")).data || []; } catch { }
+  try { prods = (await sb.from("policy_products").select("id,name,company_id").eq("is_active", true).order("sort_order").order("name")).data || []; } catch { }
   DEAL_CATALOG = cos.map(c => ({ ...c, products: prods.filter(p => p.company_id === c.id) }));
   return DEAL_CATALOG;
 }
@@ -2536,14 +2542,15 @@ async function loadCatalogAdmin() {
   c.innerHTML = `<div class="page-title">Carriers &amp; products</div><div class="page-sub">Loading…</div>${skelTable(6)}`;
   const tid = activeTenantId();
   let cos = [], prods = [];
-  try { cos   = (await sb.from("policy_companies").select("*").eq("tenant_id", tid).order("sort_order").order("name")).data || []; } catch { }
-  try { prods = (await sb.from("policy_products").select("*").eq("tenant_id", tid).order("sort_order").order("name")).data || []; } catch { }
+  try { cos   = (await sb.from("policy_companies").select("*").order("sort_order").order("name")).data || []; } catch { }
+  try { prods = (await sb.from("policy_products").select("*").order("sort_order").order("name")).data || []; } catch { }
   CATALOG_ADMIN = { cos, prods };
   DEAL_CATALOG = null; // invalidate the sold-popup cache so edits show immediately
   renderCatalogAdmin();
 }
 function renderCatalogAdmin() {
   const c = adminHost();
+  const plat = !!ME.is_platform_admin;   // shared global catalog — only the platform edits it
   const { cos, prods } = CATALOG_ADMIN;
   const carriers = cos.map(co => {
     const ps = prods.filter(p => p.company_id === co.id);
@@ -2552,24 +2559,24 @@ function renderCatalogAdmin() {
         <b style="font-size:15px;${co.is_active ? "" : "opacity:.5;text-decoration:line-through"}">${esc(co.name)}</b>
         ${co.is_active ? "" : '<span class="pill grey">Inactive</span>'}
         <div style="flex:1"></div>
-        <button class="btn-ghost sm" data-cat="rename-co" data-id="${co.id}" title="Rename"><i class="ti ti-pencil"></i></button>
+        ${plat ? `<button class="btn-ghost sm" data-cat="rename-co" data-id="${co.id}" title="Rename"><i class="ti ti-pencil"></i></button>
         <button class="btn-ghost sm" data-cat="toggle-co" data-id="${co.id}" data-active="${co.is_active}">${co.is_active ? "Deactivate" : "Activate"}</button>
-        <button class="btn-ghost sm" data-cat="del-co" data-id="${co.id}" title="Delete carrier"><i class="ti ti-trash"></i></button>
+        <button class="btn-ghost sm" data-cat="del-co" data-id="${co.id}" title="Delete carrier"><i class="ti ti-trash"></i></button>` : ""}
       </div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
-        ${ps.length ? ps.map(p => `<span class="pill ${p.is_active ? "blue" : "grey"}" style="display:inline-flex;align-items:center;gap:6px">${esc(p.name)}<i class="ti ti-x" data-cat="del-prod" data-id="${p.id}" style="cursor:pointer;opacity:.7"></i></span>`).join("") : '<span class="muted2">No products yet</span>'}
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:${plat ? "10px" : "0"}">
+        ${ps.length ? ps.map(p => `<span class="pill ${p.is_active ? "blue" : "grey"}" style="display:inline-flex;align-items:center;gap:6px">${esc(p.name)}${plat ? `<i class="ti ti-x" data-cat="del-prod" data-id="${p.id}" style="cursor:pointer;opacity:.7"></i>` : ""}</span>`).join("") : '<span class="muted2">No products yet</span>'}
       </div>
-      <div style="display:flex;gap:6px">
+      ${plat ? `<div style="display:flex;gap:6px">
         <input class="in" id="prodin-${co.id}" placeholder="Add product…" style="max-width:300px">
         <button class="btn-ghost sm" data-cat="add-prod" data-id="${co.id}"><i class="ti ti-plus"></i> Add</button>
-      </div>
+      </div>` : ""}
     </div>`;
   }).join("");
-  c.innerHTML = `<div class="page-title">Carriers &amp; products</div><div class="page-sub">Carriers and products your agents pick when logging a sold policy — applies to this agency only.</div>
-    <div class="panel" style="padding:14px;margin-bottom:16px;display:flex;gap:8px;align-items:center">
+  c.innerHTML = `<div class="page-title">Carriers &amp; products</div><div class="page-sub">Carriers and products agents pick when logging a sold policy — the shared Arcane catalog.</div>
+    ${plat ? `<div class="panel" style="padding:14px;margin-bottom:16px;display:flex;gap:8px;align-items:center">
       <input class="in" id="cat-newco" placeholder="New carrier name…" style="max-width:340px">
       <button class="btn-gold" data-cat="add-co"><i class="ti ti-plus"></i> Add carrier</button>
-    </div>
+    </div>` : `<div class="muted2" style="margin-bottom:14px">This catalog is managed by Arcane. Need a carrier or product added? Just ask.</div>`}
     ${carriers || '<div class="coming"><div class="badge"><i class="ti ti-building-bank"></i></div><b>No carriers yet</b><div>Add your first carrier above.</div></div>'}`;
   c.querySelectorAll("[data-cat]").forEach(b => b.addEventListener("click", () => catAction(b.dataset.cat, b.dataset.id, b)));
 }
@@ -2578,10 +2585,10 @@ async function catAction(action, id, btn) {
   try {
     if (action === "add-co") {
       const name = $("#cat-newco").value.trim(); if (!name) return;
-      const { error } = await sb.from("policy_companies").insert({ tenant_id: tid, name }); if (error) throw error;
+      const { error } = await sb.from("policy_companies").insert({ tenant_id: null, name }); if (error) throw error;
     } else if (action === "add-prod") {
       const name = $("#prodin-" + id).value.trim(); if (!name) return;
-      const { error } = await sb.from("policy_products").insert({ tenant_id: tid, company_id: id, name }); if (error) throw error;
+      const { error } = await sb.from("policy_products").insert({ tenant_id: null, company_id: id, name }); if (error) throw error;
     } else if (action === "del-co") {
       if (!confirm("Delete this carrier and all its products?")) return;
       const { error } = await sb.from("policy_companies").delete().eq("id", id); if (error) throw error;
