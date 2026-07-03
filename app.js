@@ -223,6 +223,7 @@ async function loadMe() {
   }
   renderApp();
   go(defaultRoute());
+  loadLeadTypeFields();   // global lead-type field catalog (import mapper + integrations)
   subscribeCalls();   // live inbound-call updates + incoming-call surface
   // returning from Stripe checkout?
   const wp = new URLSearchParams(location.search).get("wallet");
@@ -1111,34 +1112,19 @@ const PF_TZ = (() => {
 })();
 const PF_SYSTEM_TAGS = ["fex lead", "gen life lead", "goat leads", "health lead", "iul lead", "mp lead", "new lead", "spanish lead", "trucker lead", "vet lead"];
 const PF_WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const PF_LEAD_FIELDS = ["Final Expense", "Mortgage Protection", "Veteran"];
-// the field names we send per lead type through integrations (click a pill to view)
-const LEAD_TYPE_FIELDS = {
-  "Final Expense": [
-    ["date_time", "Date and time of lead"], ["first_name", "Lead's first name"], ["last_name", "Lead's last name"],
-    ["email", "Email address"], ["phone", "Contact phone number"], ["state", "State"], ["dob", "Date of birth"],
-    ["age", "Age"], ["gender", "Gender"], ["otp_code", "OTP code"],
-    ["ip_address", "IP address"], ["trusted_form_url", "Trusted Form URL"], ["needed_coverage", "Coverage amount needed"],
-    ["beneficiary", "Beneficiary relationship"], ["beneficiary_name", "Beneficiary name"],
-    ["health_history", "History of heart attack, stroke, cancer"], ["has_life_insurance", "Has life insurance"], ["favorite_hobby", "Favorite hobby"],
-  ],
-  "Mortgage Protection": [
-    ["date_time", "Date and time of lead"], ["first_name", "Lead's first name"], ["last_name", "Lead's last name"],
-    ["email", "Email address"], ["phone", "Contact phone number"], ["state", "State"], ["dob", "Date of birth"],
-    ["age", "Age"], ["gender", "Gender"], ["otp_code", "OTP code"],
-    ["ip_address", "IP address"], ["trusted_form_url", "Trusted Form URL"],
-    ["health_history", "History of cancer, heart attack, diabetes, or stroke"], ["beneficiary", "Beneficiary relationship"],
-    ["beneficiary_name", "Beneficiary name"], ["mortgage_balance", "Mortgage balance"], ["mortgage_payment", "Monthly mortgage payment"],
-  ],
-  "Veteran": [
-    ["date_time", "Date and time of lead"], ["first_name", "Lead's first name"], ["last_name", "Lead's last name"],
-    ["email", "Email address"], ["phone", "Contact phone number"], ["state", "State"], ["dob", "Date of birth"],
-    ["age", "Age"], ["gender", "Gender"], ["otp_code", "OTP code"],
-    ["ip_address", "IP address"], ["trusted_form_url", "Trusted Form URL"], ["marital_status", "Marital status"],
-    ["military_status", "Military status"], ["needed_coverage", "How much coverage do you need?"], ["contact_time", "Best time of day to contact"],
-    ["military_branch", "Military branch"], ["beneficiary", "Beneficiary relationship"], ["beneficiary_name", "Beneficiary name"],
-  ],
-};
+// Lead-type custom fields are now a GLOBAL, HQ-managed catalog (lead_type_fields table).
+// These maps are populated from the DB by loadLeadTypeFields().
+let LEAD_TYPE_FIELDS = {};   // { typeName: [[field_key, label], ...] }
+let LEAD_TYPE_IDS = {};      // { typeName: lead_type_id }
+async function loadLeadTypeFields() {
+  try {
+    const rows = (await sb.from("lead_types").select("id,name,sort_order, lead_type_fields(field_key,label,sort_order)").order("sort_order")).data || [];
+    const map = {}, ids = {};
+    rows.forEach(t => { ids[t.name] = t.id; map[t.name] = (t.lead_type_fields || []).slice().sort((a, b) => a.sort_order - b.sort_order).map(f => [f.field_key, f.label]); });
+    if (Object.keys(map).length) { LEAD_TYPE_FIELDS = map; LEAD_TYPE_IDS = ids; }
+  } catch { }
+}
+const PF_LEAD_FIELDS = () => Object.keys(LEAD_TYPE_FIELDS);
 function pfFieldsModal(type) {
   const fields = LEAD_TYPE_FIELDS[type] || [];
   const m = document.createElement("div"); m.className = "modal-bg";
@@ -1662,6 +1648,7 @@ async function connectGHL() {
   window.location.href = `${SUPABASE_URL}/functions/v1/crm-oauth-start?token=${encodeURIComponent(tok)}`;
 }
 async function pfIntegrations() {
+  if (!Object.keys(LEAD_TYPE_FIELDS).length) await loadLeadTypeFields();
   const S = ME.settings || {}, ig = S.integrations || {};
   const ghlOn = !!(ME.ghl_api_key || ME.ghl_location_id);
   let sheets = [], typeName = {}, gEmail = null, gConnected = false, ghlConn = false;
@@ -1676,7 +1663,7 @@ async function pfIntegrations() {
     </div>`).join("") : `<div class="pf-int-row muted2">No sheets yet — add one to auto-deliver leads.</div>`;
   $("#pf-body").innerHTML = `
     <div class="pf-card"><div class="pf-card-h2"><b><i class="ti ti-forms"></i> Fields Provided By Lead Type</b><span>Manage your custom integration options</span></div>
-      <div class="pf-fieldpills">${PF_LEAD_FIELDS.map(f => `<span class="pf-fieldpill" data-lt="${esc(f)}">${f} Lead Fields <i class="ti ti-eye"></i></span>`).join("")}</div>
+      <div class="pf-fieldpills">${PF_LEAD_FIELDS().map(f => `<span class="pf-fieldpill" data-lt="${esc(f)}">${f} Lead Fields <i class="ti ti-eye"></i></span>`).join("")}</div>
     </div>
     <div class="pf-card"><div class="pf-int-h"><div><b><i class="ti ti-table"></i> Google Sheets Integration</b><span>Auto-create a sheet, share it, and deliver leads to it</span></div><button class="btn-gold pf-int-btn" id="sh-add"><i class="ti ti-plus"></i> Add Google Sheet</button></div>
       ${sheetRows}</div>
@@ -1697,7 +1684,7 @@ function openSheetModal() {
   m.innerHTML = `<div class="modal" style="width:430px"><div class="modal-h"><span><i class="ti ti-table" style="color:var(--gold)"></i> New Google Sheet</span><i class="ti ti-x" id="sh-x" style="cursor:pointer;color:var(--tx3)"></i></div>
     <div class="modal-b">
       <div class="field"><label>Sheet name</label><input class="in" id="sh-name" placeholder="e.g. Sydney – MP Leads"></div>
-      <div class="field"><label>Lead type</label>${_sel("sh-type", PF_LEAD_FIELDS, "Mortgage Protection")}</div>
+      <div class="field"><label>Lead type</label>${_sel("sh-type", PF_LEAD_FIELDS(), "Mortgage Protection")}</div>
       <div class="field"><label>Share with (emails, comma-separated)</label><input class="in" id="sh-emails" placeholder="client@x.com, buyer@x.com"></div>
       <label class="cbx" id="sh-default" style="margin-top:4px"><span class="box"><i class="ti ti-check"></i></span>Make this the default sheet for this lead type</label>
       <div id="sh-err" style="color:var(--red);font-size:12px;min-height:14px;margin-top:8px"></div>
@@ -2840,16 +2827,18 @@ function parseCSV(text) {
   if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
   return rows.filter(r => r.some(x => (x || "").trim() !== ""));
 }
-// resolve a LEAD_TYPE_FIELDS key ("Mortgage Protection") to a catalog lead_type_id
+// resolve a lead-type name ("Mortgage Protection") to its global lead_type_id
 function resolveLeadTypeId(name) {
+  if (LEAD_TYPE_IDS[name]) return LEAD_TYPE_IDS[name];
   const n = String(name || "").toLowerCase();
-  const hit = (CATALOG || []).find(t => String(t.name).toLowerCase() === n) || (CATALOG || []).find(t => String(t.name).toLowerCase().includes(n) || n.includes(String(t.name).toLowerCase()));
+  const hit = (CATALOG || []).find(t => String(t.name).toLowerCase() === n);
   return hit ? hit.id : null;
 }
 let IMPORT = null;
 async function loadImport() {
   const c = $("#content");
   if (!isAdminUser()) { c.innerHTML = `<div class="coming"><div class="badge"><i class="ti ti-lock"></i></div><b>Admins only</b><div>Lead import is an admin tool.</div></div>`; return; }
+  if (!Object.keys(LEAD_TYPE_FIELDS).length) await loadLeadTypeFields();
   if (!CATALOG) { try { CATALOG = (await sb.from("lead_types").select("*").eq("is_active", true).order("sort_order")).data || []; } catch { CATALOG = []; } }
   IMPORT = null;
   c.innerHTML = `<div class="page-title">Import leads</div><div class="page-sub">Bulk-upload a CSV. Duplicates (by phone or email) are skipped, and imported leads are assigned to you.</div>
