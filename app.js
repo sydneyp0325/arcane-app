@@ -753,7 +753,7 @@ let ORDER = null;
 async function loadOrder() {
   const c = $("#content");
   c.innerHTML = `<div class="page-title">Order leads</div><div class="page-sub">Real-time leads, delivered the moment they come in.</div><div class="coming"><span class="spin"></span></div>`;
-  if (!CATALOG) { try { CATALOG = (await sb.from("lead_types").select("*, lead_verticals(name)").eq("is_active", true).order("sort_order")).data || []; } catch { CATALOG = []; } }
+  if (!CATALOG) { try { CATALOG = (await sb.from("lead_types").select("*").eq("is_active", true).order("sort_order")).data || []; } catch { CATALOG = []; } }
   const lt = CATALOG[0];
   if (!lt) { c.innerHTML = `<div class="coming"><div class="badge"><i class="ti ti-alert-triangle"></i></div><b>No lead types configured</b><div>Add one in Admin → Pricing &amp; tiers (and make sure migrations 161–163 ran on this environment).</div></div>`; return; }
   // every REALTIME tier is a purchasable option in the realtime funnel
@@ -1963,7 +1963,7 @@ function openTaskModal(presetLead = null) {
 async function loadAged() {
   const c = $("#content");
   c.innerHTML = `<div class="page-title">Aged lead store</div><div class="page-sub">Discounted aged leads by state.</div><div class="coming"><span class="spin"></span></div>`;
-  if (!CATALOG) { try { CATALOG = (await sb.from("lead_types").select("*, lead_verticals(name)").eq("is_active", true).order("sort_order")).data || []; } catch { CATALOG = []; } }
+  if (!CATALOG) { try { CATALOG = (await sb.from("lead_types").select("*").eq("is_active", true).order("sort_order")).data || []; } catch { CATALOG = []; } }
   let avail = []; try { avail = (await sb.rpc("claimable_leads")).data || []; } catch { avail = []; }
   const byState = {}; avail.forEach(r => { byState[r.state] = (byState[r.state] || 0) + (r.available || 0); });
   const states = Object.entries(byState).sort((a, b) => b[1] - a[1]);
@@ -2843,7 +2843,7 @@ let IMPORT = null;
 async function loadImport() {
   const c = $("#content");
   if (!isAdminUser()) { c.innerHTML = `<div class="coming"><div class="badge"><i class="ti ti-lock"></i></div><b>Admins only</b><div>Lead import is an admin tool.</div></div>`; return; }
-  if (!CATALOG) { try { CATALOG = (await sb.from("lead_types").select("*, lead_verticals(name)").eq("is_active", true).order("sort_order")).data || []; } catch { CATALOG = []; } }
+  if (!CATALOG) { try { CATALOG = (await sb.from("lead_types").select("*").eq("is_active", true).order("sort_order")).data || []; } catch { CATALOG = []; } }
   IMPORT = null;
   c.innerHTML = `<div class="page-title">Import leads</div><div class="page-sub">Bulk-upload a CSV. Duplicates (by phone or email) are skipped, and imported leads are assigned to you.</div>
     <div class="pf-card" style="max-width:660px"><div class="pf-card-h2"><b><i class="ti ti-file-upload"></i> Upload CSV</b><span>First row = column headers</span></div>
