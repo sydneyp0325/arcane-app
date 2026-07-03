@@ -191,6 +191,13 @@ async function loadMe() {
   }
   renderApp();
   go(defaultRoute());
+  // returning from Stripe checkout?
+  const wp = new URLSearchParams(location.search).get("wallet");
+  if (wp) {
+    history.replaceState({}, "", location.pathname);
+    if (wp === "success") { toast("Payment received — updating your balance…"); go("wallet"); setTimeout(() => { if (ROUTE === "wallet") loadWallet(); }, 2500); }
+    else if (wp === "cancel") { toast("Payment canceled."); }
+  }
 }
 
 // ---------------------------------------------------------------- login / onboarding (Supabase Auth)
@@ -2571,7 +2578,7 @@ function renderCalls() {
       <td><span class="pill ${st.cls}">${st.label}</span></td>
       <td>${fmtDur(cl.talk_sec || cl.duration_sec)}</td>
       <td>${cl.billable ? money(cl.price) : '<span class="muted2">—</span>'}</td>
-      <td>${cl.recording_url ? `<button class="btn-ghost sm rec-btn" data-rec="${cl.id}" title="Play recording"><i class="ti ti-player-play"></i></button>` : '<span class="muted2">—</span>'}</td>
+      <td>${cl.recording_url ? `<button class="rec-play" data-rec="${cl.id}" title="Play recording"><i class="ti ti-player-play"></i></button>` : '<span class="muted2">—</span>'}</td>
       <td><span class="disp-pick" data-disp="${cl.id}"><span class="dot ${dispDef(cl.disposition).badge}"></span>${dispLabel(cl.disposition)}<i class="ti ti-chevron-down"></i></span></td>
       <td style="text-align:right">${cl.deal_id ? '<span class="pill green">Sold</span>' : `<button class="btn-gold sm" data-sold="${cl.id}"><i class="ti ti-rosette-discount-check"></i> Mark as Sold</button>`}</td>
     </tr>`;
@@ -2586,7 +2593,7 @@ function renderCalls() {
   // play the Trackdrive recording inline; keep an open-in-new-tab fallback
   c.querySelectorAll("[data-rec]").forEach(b => b.addEventListener("click", () => {
     const cl = CALLS_DATA.find(x => x.id === b.dataset.rec); if (!cl?.recording_url) return;
-    b.parentElement.innerHTML = `<audio controls autoplay preload="none" src="${esc(cl.recording_url)}" style="height:30px;max-width:190px;vertical-align:middle"></audio> <a href="${esc(cl.recording_url)}" target="_blank" rel="noopener" title="Open recording in new tab" style="color:var(--tx3);margin-left:2px"><i class="ti ti-external-link"></i></a>`;
+    b.parentElement.innerHTML = `<audio class="rec-audio" controls autoplay preload="none" src="${esc(cl.recording_url)}"></audio> <a href="${esc(cl.recording_url)}" target="_blank" rel="noopener" title="Open recording in new tab" style="color:var(--tx3);margin-left:2px"><i class="ti ti-external-link"></i></a>`;
   }));
 }
 
@@ -2627,11 +2634,12 @@ async function loadWallet() {
   try { txns = (await sb.from("wallet_transactions").select("*").eq("agent_id", ME.id).order("created_at", { ascending: false }).limit(100)).data || []; } catch { }
   renderWallet(w, txns);
 }
+let WALLET_DATA = null;
 function renderWallet(w, txns) {
+  WALLET_DATA = w;
   const c = $("#content");
   const bal = w ? +w.balance : 0;
-  const card = w?.default_pm_id ? "Card on file" : "No card on file";
-  const reload = w?.auto_reload_enabled ? `Auto-reload ${money(w.auto_reload_amount || 0)} when below ${money(w.auto_reload_threshold || 0)}` : "Auto-reload off";
+  const hasCard = !!w?.default_pm_id;
   const rows = txns.map(t => `<tr>
       <td>${fmtDT(t.created_at)}</td>
       <td>${pretty(t.type)}</td>
@@ -2644,13 +2652,68 @@ function renderWallet(w, txns) {
       <div class="wallet-card">
         <div class="wc-l">Balance</div>
         <div class="wc-bal">${money(bal)}</div>
-        <div class="wc-sub">${esc(card)} · ${esc(reload)}</div>
+        <div class="wc-sub">${hasCard ? "Card on file" : "No card on file"}</div>
         <button class="btn-gold" id="wallet-topup"><i class="ti ti-plus"></i> Add funds</button>
+      </div>
+      <div class="wallet-card">
+        <div class="wc-l">Auto-reload</div>
+        <label class="ar-row"><span>Automatically top up my wallet</span>
+          <span class="av-sw"><input type="checkbox" id="ar-enabled" ${w?.auto_reload_enabled ? "checked" : ""}><span class="av-track"></span></span>
+        </label>
+        <div class="ar-grid">
+          <div class="field"><label>When balance falls below ($)</label><input class="in" id="ar-threshold" type="number" min="0" step="1" value="${w?.auto_reload_threshold ?? ""}" placeholder="e.g. 50"></div>
+          <div class="field"><label>Top up by ($)</label><input class="in" id="ar-amount" type="number" min="0" step="1" value="${w?.auto_reload_amount ?? ""}" placeholder="e.g. 200"></div>
+        </div>
+        <div class="wc-sub">${hasCard ? "Charged to your saved card." : "Add funds once to save a card, then auto-reload can charge it."}</div>
+        <button class="btn-ghost" id="ar-save"><i class="ti ti-check"></i> Save auto-reload</button>
       </div>
     </div>
     ${txns.length ? `<table class="data-tbl"><thead><tr><th>Date</th><th>Type</th><th>Description</th><th style="text-align:right">Amount</th><th style="text-align:right">Balance</th></tr></thead><tbody>${rows}</tbody></table>`
       : `<div class="coming"><div class="badge"><i class="ti ti-wallet"></i></div><b>No transactions yet</b><div>Top-ups and charges will show here.</div></div>`}`;
-  $("#wallet-topup")?.addEventListener("click", () => toast("Card top-up — coming with Stripe setup"));
+  $("#wallet-topup")?.addEventListener("click", openTopupModal);
+  $("#ar-save")?.addEventListener("click", saveAutoReload);
+}
+
+function openTopupModal() {
+  const presets = [100, 250, 500, 1000];
+  const m = document.createElement("div"); m.className = "modal-bg";
+  m.innerHTML = `<div class="modal" style="width:400px"><div class="modal-h"><span><i class="ti ti-wallet" style="color:var(--gold)"></i> Add funds</span><i class="ti ti-x" id="tu-x" style="cursor:pointer;color:var(--tx3)"></i></div>
+    <div class="modal-b">
+      <div class="tu-presets">${presets.map(p => `<button class="tu-preset" data-amt="${p}">$${p}</button>`).join("")}</div>
+      <div class="field"><label>Or enter an amount</label><input class="in" id="tu-amt" type="number" min="5" step="1" placeholder="$ amount"></div>
+      <div id="tu-err" style="color:var(--red);font-size:12px;min-height:14px"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px"><button class="btn-ghost" id="tu-cancel">Cancel</button><button class="btn-gold" id="tu-go"><i class="ti ti-credit-card"></i> Continue to payment</button></div>
+      <div class="muted2" style="margin-top:8px;font-size:11px">You'll be taken to Stripe's secure checkout. Your card is saved so auto-reload can use it.</div>
+    </div></div>`;
+  document.body.appendChild(m);
+  const close = () => m.remove();
+  m.addEventListener("click", e => { if (e.target === m) close(); });
+  $("#tu-x").addEventListener("click", close); $("#tu-cancel").addEventListener("click", close);
+  m.querySelectorAll(".tu-preset").forEach(b => b.addEventListener("click", () => { $("#tu-amt").value = b.dataset.amt; m.querySelectorAll(".tu-preset").forEach(x => x.classList.remove("on")); b.classList.add("on"); }));
+  $("#tu-go").addEventListener("click", async () => {
+    const amt = parseFloat($("#tu-amt").value);
+    if (!amt || amt < 5) { $("#tu-err").textContent = "Enter an amount of $5 or more."; return; }
+    const btn = $("#tu-go"); btn.disabled = true; btn.textContent = "Redirecting…";
+    try {
+      const { data, error } = await sb.functions.invoke("wallet-checkout", { body: { amount: amt, return_url: location.origin + location.pathname } });
+      if (error) { let msg = error.message; try { const j = await error.context.json(); if (j?.error) msg = j.error; } catch { } throw new Error(msg); }
+      if (!data?.url) throw new Error(data?.error || "Checkout failed.");
+      window.location.href = data.url;
+    } catch (e) { btn.disabled = false; btn.innerHTML = `<i class="ti ti-credit-card"></i> Continue to payment`; $("#tu-err").textContent = e.message || "Could not start checkout."; }
+  });
+}
+
+async function saveAutoReload() {
+  const enabled = $("#ar-enabled").checked;
+  const threshold = parseFloat($("#ar-threshold").value) || 0;
+  const amount = parseFloat($("#ar-amount").value) || 0;
+  if (enabled && (threshold <= 0 || amount <= 0)) { toast("Set both a threshold and a top-up amount."); return; }
+  if (enabled && !WALLET_DATA?.default_pm_id) { toast("Add funds once first to save a card."); return; }
+  const btn = $("#ar-save"); btn.disabled = true; btn.textContent = "Saving…";
+  const { error } = await sb.rpc("set_wallet_autoreload", { p_enabled: enabled, p_threshold: threshold, p_amount: amount });
+  btn.disabled = false; btn.innerHTML = `<i class="ti ti-check"></i> Save auto-reload`;
+  toast(error ? "Couldn't save auto-reload." : "Auto-reload saved.");
+  if (!error) loadWallet();
 }
 
 boot();

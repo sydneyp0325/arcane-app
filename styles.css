@@ -522,11 +522,22 @@ textarea.in{resize:vertical;min-height:64px;line-height:1.5}
 .data-tbl td{padding:11px 12px;border-bottom:1px solid var(--line);color:var(--tx);vertical-align:middle}
 .data-tbl tbody tr:hover{background:rgba(255,255,255,.02)}
 .btn-gold.sm{padding:5px 10px;font-size:12px}
-.wallet-top{margin-top:16px}
-.wallet-card{max-width:360px;padding:20px;border:1px solid var(--line);border-radius:14px;background:var(--card)}
+.wallet-top{margin:16px 0;display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+.wallet-card{width:360px;max-width:100%;padding:20px;border:1px solid var(--line);border-radius:14px;background:var(--card)}
 .wallet-card .wc-l{font-size:12px;color:var(--tx3);text-transform:uppercase;letter-spacing:.04em}
 .wallet-card .wc-bal{font-size:34px;font-weight:700;color:var(--tx);font-variant-numeric:tabular-nums;margin:4px 0}
-.wallet-card .wc-sub{font-size:12px;color:var(--tx2);margin-bottom:14px}
+.wallet-card .wc-sub{font-size:12px;color:var(--tx2);margin:6px 0 14px}
+.ar-row{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;color:var(--tx2);margin:10px 0}
+.ar-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px}
+.tu-presets{display:flex;gap:8px;margin-bottom:14px}
+.tu-preset{flex:1;padding:11px 0;border:1px solid var(--line);border-radius:9px;background:var(--card-2);color:var(--tx);font-weight:600;font-size:13px;cursor:pointer;transition:.12s}
+.tu-preset:hover{border-color:var(--gold)}
+.tu-preset.on{background:var(--gold-grad);color:var(--gold-ink);border-color:transparent}
+/* inbound-call recording player */
+.rec-play{width:28px;height:28px;padding:0;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--line);background:var(--card-2);color:var(--gold);cursor:pointer;font-size:13px;line-height:1;transition:background .12s,border-color .12s}
+.rec-play:hover{border-color:var(--gold);background:rgba(219,179,90,.12)}
+.rec-play i{margin-left:1px}
+.rec-audio{height:32px;max-width:210px;vertical-align:middle;color-scheme:dark}
 .clerk-mount{display:flex;align-items:center;justify-content:center;width:100%;min-height:440px}
 .disp-pick{display:inline-flex;align-items:center;gap:6px;cursor:pointer;padding:3px 8px;border-radius:7px;border:1px solid transparent;font-size:12.5px;color:var(--tx)}
 .disp-pick:hover{background:var(--card-2);border-color:var(--line)}
