@@ -61,7 +61,7 @@ function skelCards(n = 5) {
 function timeAgo(d) { const s = (Date.now() - d.getTime()) / 1000; if (s < 60) return "just now"; if (s < 3600) return Math.floor(s / 60) + "m ago"; if (s < 86400) return Math.floor(s / 3600) + "h ago"; return Math.floor(s / 86400) + "d ago"; }
 async function checkNotifDot() {
   try { const since = new Date(Date.now() - 86400000).toISOString();
-    const { count } = await sb.from("lead_assignments").select("id", { count: "exact", head: true }).eq("agent_id", ME.id).gte("assigned_at", since);
+    const { count } = await sb.from("assignments").select("id", { count: "exact", head: true }).eq("agent_id", ME.id).gte("assigned_at", since);
     const dot = document.querySelector("#notif-dot"); if (dot && count > 0) dot.style.display = "block";
   } catch { }
 }
@@ -78,7 +78,7 @@ async function toggleNotifications() {
   const nm = o => `${o?.first_name || ""} ${o?.last_name || ""}`.trim() || "Lead";
   try { (await sb.from("deals").select("client_name,annual_premium,sale_date,created_at").eq("agent_id", ME.id).order("created_at", { ascending: false }).limit(6)).data?.forEach(d => items.push({ t: new Date(d.created_at || d.sale_date), ic: "ti-rosette-discount-check", cl: "green", txt: `Deal logged — ${money(d.annual_premium)} AP`, sub: d.client_name || "" })); } catch { }
   try { (await sb.from("lead_appointments").select("starts_at,created_at,leads(first_name,last_name)").eq("agent_id", ME.id).order("created_at", { ascending: false }).limit(6)).data?.forEach(a => items.push({ t: new Date(a.created_at || a.starts_at), ic: "ti-calendar-event", cl: "blue", txt: `Appointment — ${nm(a.leads)}`, sub: new Date(a.starts_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) })); } catch { }
-  try { (await sb.from("lead_assignments").select("assigned_at,leads(first_name,last_name,state)").eq("agent_id", ME.id).order("assigned_at", { ascending: false }).limit(8)).data?.forEach(a => items.push({ t: new Date(a.assigned_at), ic: "ti-user-plus", cl: "gold", txt: `New lead — ${nm(a.leads)}`, sub: a.leads?.state || "" })); } catch { }
+  try { (await sb.from("assignments").select("assigned_at,leads(first_name,last_name,state)").eq("agent_id", ME.id).order("assigned_at", { ascending: false }).limit(8)).data?.forEach(a => items.push({ t: new Date(a.assigned_at), ic: "ti-user-plus", cl: "gold", txt: `New lead — ${nm(a.leads)}`, sub: a.leads?.state || "" })); } catch { }
   items.sort((a, b) => b.t - a.t);
   const body = pop.querySelector(".notif-body");
   body.innerHTML = items.length ? items.slice(0, 14).map(i => `<div class="notif-item"><span class="notif-ic ${i.cl}"><i class="ti ${i.ic}"></i></span><div style="min-width:0"><div class="notif-txt">${esc(i.txt)}</div><div class="notif-sub">${[esc(i.sub), timeAgo(i.t)].filter(Boolean).join(" · ")}</div></div></div>`).join("") : `<div class="notif-empty">Nothing yet.</div>`;
@@ -511,10 +511,8 @@ async function loadDashboard() {
   wireDashFilter();
 
   let asn = [], deals = [], openTasks = 0;
-  // prefer the unified per-assignment lead_cost (realtime + aged); fall back if the column isn't deployed yet
-  try { asn = (await sb.from("lead_assignments").select("lead_id,tier_at_assignment,disposition,assigned_at,source,realtime_cost,lead_cost,leads(created_at,lead_type_id,state)").eq("agent_id", ME.id)).data || []; } catch {}
-  if (!asn.length) { try { asn = (await sb.from("lead_assignments").select("lead_id,tier_at_assignment,disposition,assigned_at,source,realtime_cost,leads(created_at,lead_type_id,state)").eq("agent_id", ME.id)).data || []; } catch {} }
-  if (!asn.length) { try { asn = (await sb.from("lead_assignments").select("lead_id,tier_at_assignment,disposition,assigned_at,source,realtime_cost,leads(created_at)").eq("agent_id", ME.id)).data || []; } catch {} }
+  // per-assignment lead cost lives in assignments.price (realtime + aged + import + manual)
+  try { asn = (await sb.from("assignments").select("lead_id,disposition,assigned_at,source,price,leads(created_at,lead_type_id,state)").eq("agent_id", ME.id)).data || []; } catch {}
   try { deals = (await sb.from("deals").select("id,lead_id,annual_premium,status,sale_date").eq("agent_id", ME.id)).data || []; } catch {}
   let typeName = {};
   try { (await sb.from("lead_types").select("id,name")).data?.forEach(t => { typeName[t.id] = t.name; }); } catch {}
@@ -599,7 +597,7 @@ function dashMetrics() {
   const closed = fdeals.filter(d => COUNTABLE.has(d.status));
   const ap = closed.reduce((s, d) => s + (Number(d.annual_premium) || 0), 0);
   // spend = per-assignment lead cost (realtime + aged), legacy realtime_cost as fallback
-  const spend = fasn.reduce((s, a) => s + (Number(a.lead_cost ?? a.realtime_cost) || 0), 0);
+  const spend = fasn.reduce((s, a) => s + (Number(a.price) || 0), 0);
   const cpa = closed.length ? spend / closed.length : 0;
   const roi = spend > 0 ? ((ap - spend) / spend) * 100 : 0;
   const salesPct = totalLeads ? (closed.length / totalLeads) * 100 : 0;
@@ -2148,7 +2146,7 @@ async function openLeadPanel(id) {
   let l = null, asn = null;
   try { l = (await sb.from("leads").select("*").eq("id", id).single()).data; } catch { }
   if (!l) return;
-  try { asn = (await sb.from("lead_assignments").select("id,disposition").eq("lead_id", id).eq("agent_id", ME.id).order("assigned_at", { ascending: false }).limit(1).maybeSingle()).data; } catch { }
+  try { asn = (await sb.from("assignments").select("id,disposition").eq("lead_id", id).eq("agent_id", ME.id).order("assigned_at", { ascending: false }).limit(1).maybeSingle()).data; } catch { }
   l._asn = asn;
   LEAD_PANEL = l; LP_TAB = "details";
   LP_HIDE = { contact: false, data: false }; LP_EDIT = { contact: false, data: false };
@@ -2241,8 +2239,7 @@ async function lpRenderTab() {
   if (LP_TAB === "notes") {
     b.innerHTML = `<div class="coming"><span class="spin"></span></div>`;
     let n = [];
-    try { n = (await sb.rpc("lead_notes_for", { p_lead: l.id })).data || []; }
-    catch { try { n = (await sb.from("lead_notes").select("*").eq("lead_id", l.id).order("created_at", { ascending: false })).data || []; } catch { } }
+    try { n = (await sb.from("lead_notes").select("*").eq("lead_id", l.id).order("created_at", { ascending: false })).data || []; } catch { }
     b.innerHTML = lpNotes(n);
     b.querySelector("#lp-addnote")?.addEventListener("click", lpAddNote);
     return;
