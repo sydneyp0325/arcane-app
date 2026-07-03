@@ -169,7 +169,8 @@ async function loadMe() {
   // per-agency signup via invite code: ?invite=<CODE> lands NEW agents in that agency
   const urlInvite = new URLSearchParams(location.search).get("invite");
   if (urlInvite) localStorage.setItem("arcane_invite", urlInvite.trim());
-  const inviteCode = localStorage.getItem("arcane_invite") || null;
+  // invite can survive an email-confirm round-trip on a different device via auth metadata
+  const inviteCode = localStorage.getItem("arcane_invite") || user?.user_metadata?.invite_code || null;
   let data = null;
   // find-or-create (or claim by email) this user's agent row
   try { data = (await sb.rpc("bootstrap_agent", { p_email: email, p_full_name: user?.user_metadata?.full_name || null, p_invite_code: inviteCode })).data; }
@@ -314,7 +315,8 @@ async function onbSubmit() {
   err.style.color = "var(--red)"; err.textContent = ""; btn.disabled = true; btn.textContent = "Creating…";
   const invite = (new URLSearchParams(location.search).get("invite") || localStorage.getItem("arcane_invite") || "").trim();
   if (invite) localStorage.setItem("arcane_invite", invite);
-  const { data, error } = await sb.auth.signUp({ email: ONB.email, password: ONB.password, options: { data: { full_name: ONB.full_name }, emailRedirectTo: window.location.origin + window.location.pathname } });
+  const redir = window.location.origin + window.location.pathname + (invite ? `?invite=${encodeURIComponent(invite)}` : "");
+  const { data, error } = await sb.auth.signUp({ email: ONB.email, password: ONB.password, options: { data: { full_name: ONB.full_name, invite_code: invite || null }, emailRedirectTo: redir } });
   if (error) { btn.disabled = false; btn.textContent = "Create account"; err.textContent = error.message; return; }
   if (!data.session) {
     localStorage.setItem("arcane_onb", JSON.stringify(ONB));
@@ -456,7 +458,7 @@ function go(route) {
 const COUNTABLE = new Set(["underwriting", "approved", "issued"]);
 const DASH_PRESETS = [["today", "Today"], ["yesterday", "Yesterday"], ["last7", "Last 7 days"], ["last30", "Last 30 days"], ["thismonth", "This month"], ["lastmonth", "Last month"]];
 let DASH_RANGE = { preset: "last30", from: null, to: null, useCreated: false };
-let DASH_PERF = "all", DASH_ASN = [], DASH_DEALS = [];   // Lead Performance channel toggle (all/realtime/aged)
+let DASH_PERF = "all", DASH_ASN = [], DASH_DEALS = [], DASH_OPENTASKS = 0, DASH_TYPENAME = {};   // Lead Performance channel toggle (all/realtime/aged) scopes the whole lead panel
 function rangeFor(preset) {
   const iso = x => x.toISOString().slice(0, 10);
   const d = new Date(), today = iso(d);
@@ -502,11 +504,11 @@ async function loadDashboard() {
   if ($("#ap-today-n")) $("#ap-today-n").textContent = closedToday.length;
   if ($("#ap-mtd-n")) $("#ap-mtd-n").textContent = closedMtd.length;
 
-  // apply the dashboard date range to the cards / donut / funnel
+  DASH_OPENTASKS = openTasks; DASH_TYPENAME = typeName;
+
+  // apply the dashboard date range (inbound-call sub-group is independent of the lead-channel toggle)
   const [rFrom, rTo] = dashRange();
   const inR = ds => ds && (!rFrom || ds >= rFrom) && (!rTo || ds <= rTo);
-  const fasn = asn.filter(a => inR(((DASH_RANGE.useCreated ? a.leads?.created_at : a.assigned_at) || "").slice(0, 10)));
-  const fdeals = deals.filter(d => inR(d.sale_date));
 
   // ---- inbound-call sub-group (same date range) ----
   const fcalls = calls.filter(cl => inR((cl.started_at || "").slice(0, 10)));
@@ -538,50 +540,65 @@ async function loadDashboard() {
       <div class="stat"><span class="ic ic-purple"><i class="ti ti-coin"></i></span><div><div class="lab">AP generated</div><div class="val num" style="color:var(--gold)">${money(cAp)}</div></div></div>
     </div>`;
 
+  const seg = `<div class="seg" id="perf-seg">${[["all", "All"], ["realtime", "Real-Time"], ["aged", "Aged"]].map(([v, l]) => `<span data-perf="${v}" class="${DASH_PERF === v ? "on" : ""}">${l}</span>`).join("")}</div>`;
+  c.innerHTML = head + `
+    <div class="perf-top" style="margin-top:2px"><span class="perf-title">Lead Performance</span>${seg}</div>
+    <div class="perf-note" id="perf-note">${perfNoteText()}</div>
+    <div id="dash-lead">${dashLeadHTML()}</div>
+    ${callsSection}`;
+  wireDashFilter();
+  document.querySelectorAll("#perf-seg span").forEach(s => s.addEventListener("click", () => dashSetPerf(s.dataset.perf)));
+  c.querySelectorAll(".stat .val").forEach(countUp);
+}
+
+// Lead-channel toggle (All = every source, Real-Time / Aged = that source only) scopes the whole lead panel.
+function dashMetrics() {
+  const [rFrom, rTo] = dashRange();
+  const inR = ds => ds && (!rFrom || ds >= rFrom) && (!rTo || ds <= rTo);
+  let fasn = DASH_ASN.filter(a => inR(((DASH_RANGE.useCreated ? a.leads?.created_at : a.assigned_at) || "").slice(0, 10)));
+  if (DASH_PERF !== "all") fasn = fasn.filter(a => a.source === DASH_PERF);
+  const leadIds = new Set(fasn.map(a => a.lead_id));
+  let fdeals = DASH_DEALS.filter(d => inR(d.sale_date));
+  if (DASH_PERF !== "all") fdeals = fdeals.filter(d => d.lead_id && leadIds.has(d.lead_id));
   const totalLeads = fasn.length;
   const contacts = fasn.filter(a => a.disposition && a.disposition !== "new_lead").length;
   const appts = fasn.filter(a => a.disposition === "appt_booked").length;
   const closed = fdeals.filter(d => COUNTABLE.has(d.status));
   const ap = closed.reduce((s, d) => s + (Number(d.annual_premium) || 0), 0);
-
-  // money metrics — spend = per-assignment lead cost (realtime + aged), legacy realtime_cost as fallback
+  // spend = per-assignment lead cost (realtime + aged), legacy realtime_cost as fallback
   const spend = fasn.reduce((s, a) => s + (Number(a.lead_cost ?? a.realtime_cost) || 0), 0);
   const cpa = closed.length ? spend / closed.length : 0;
   const roi = spend > 0 ? ((ap - spend) / spend) * 100 : 0;
   const salesPct = totalLeads ? (closed.length / totalLeads) * 100 : 0;
-
-  // lead types donut (by lead_type)
   const byType = {};
-  fasn.forEach(a => { const t = typeName[a.leads?.lead_type_id] || "Unspecified"; byType[t] = (byType[t] || 0) + 1; });
-  const tierList = Object.entries(byType).sort((a, b) => b[1] - a[1]).slice(0, 4);
+  fasn.forEach(a => { const t = DASH_TYPENAME[a.leads?.lead_type_id] || "Unspecified"; byType[t] = (byType[t] || 0) + 1; });
+  return { totalLeads, contacts, appts, closedN: closed.length, ap, cpa, roi, salesPct, byType };
+}
+function dashLeadHTML() {
+  const m = dashMetrics();
+  const { totalLeads, contacts, appts } = m;
+  const tierList = Object.entries(m.byType).sort((a, b) => b[1] - a[1]).slice(0, 4);
   const tierTotal = tierList.reduce((s, e) => s + e[1], 0) || 1;
   const tierColors = ["#c17d53", "#d9a25c", "#b8845a", "#8f9a6b", "#a76a4a", "#c9a36a"];
   let off = 25, donut = `<circle cx="21" cy="21" r="15.9" fill="none" stroke="#2a201a" stroke-width="6"></circle>`;
   tierList.forEach(([, n], i) => { const pct = Math.round(n / tierTotal * 100); donut += `<circle cx="21" cy="21" r="15.9" fill="none" stroke="${tierColors[i]}" stroke-width="6" stroke-dasharray="${pct} ${100 - pct}" stroke-dashoffset="${off}"></circle>`; off = (off - pct + 100) % 100; });
   const legend = tierList.map(([t, n], i) => `<span><i style="background:${tierColors[i]}"></i>${esc(t)} ${Math.round(n / tierTotal * 100)}%</span>`).join("") || `<span style="color:var(--tx3)">No leads in range</span>`;
-
   const fbar = (v, col) => `<div class="bar"><i style="width:${Math.round((v / (totalLeads || 1)) * 100)}%;background:${col}"></i></div>`;
   const frow = (lab, v, col) => `<div><div class="r"><span>${lab}</span><b class="num">${v.toLocaleString()} (${pct1(totalLeads ? v / totalLeads * 100 : 0)})</b></div>${fbar(v, col)}</div>`;
-
-  c.innerHTML = head + `
+  return `
     <div class="stat-grid">
       <div class="stat"><span class="ic ic-purple"><i class="ti ti-users"></i></span><div><div class="lab">Total leads</div><div class="val num">${totalLeads.toLocaleString()}</div></div></div>
       <div class="stat"><span class="ic ic-blue"><i class="ti ti-phone"></i></span><div><div class="lab">Contacts</div><div class="val num">${contacts.toLocaleString()}</div></div></div>
       <div class="stat"><span class="ic ic-amber"><i class="ti ti-calendar-event"></i></span><div><div class="lab">Appointments</div><div class="val num">${appts.toLocaleString()}</div></div></div>
-      <div class="stat"><span class="ic ic-blue"><i class="ti ti-checkbox"></i></span><div><div class="lab">Open tasks</div><div class="val num">${openTasks.toLocaleString()}</div></div></div>
-      <div class="stat"><span class="ic ic-green"><i class="ti ti-circle-check"></i></span><div><div class="lab">Sales</div><div class="val num">${closed.length.toLocaleString()}</div></div></div>
+      <div class="stat"><span class="ic ic-blue"><i class="ti ti-checkbox"></i></span><div><div class="lab">Open tasks</div><div class="val num">${DASH_OPENTASKS.toLocaleString()}</div></div></div>
+      <div class="stat"><span class="ic ic-green"><i class="ti ti-circle-check"></i></span><div><div class="lab">Sales</div><div class="val num">${m.closedN.toLocaleString()}</div></div></div>
     </div>
     <div class="stat-grid">
-      <div class="stat"><span class="ic ic-purple"><i class="ti ti-coin"></i></span><div><div class="lab">Annual premium</div><div class="val num" style="color:var(--gold)">${money(ap)}</div></div></div>
-      <div class="stat"><span class="ic ic-amber"><i class="ti ti-receipt"></i></span><div><div class="lab">CPA</div><div class="val num">${money(cpa)}</div></div></div>
-      <div class="stat"><span class="ic ic-pink"><i class="ti ti-chart-line"></i></span><div><div class="lab">ROI</div><div class="val num" style="color:${roi >= 0 ? "var(--green)" : "var(--red)"}">${pct1(roi)}</div></div></div>
-      <div class="stat"><span class="ic ic-blue"><i class="ti ti-percentage"></i></span><div><div class="lab">Sales %</div><div class="val num">${pct1(salesPct)}</div></div></div>
+      <div class="stat"><span class="ic ic-purple"><i class="ti ti-coin"></i></span><div><div class="lab">Annual premium</div><div class="val num" style="color:var(--gold)">${money(m.ap)}</div></div></div>
+      <div class="stat"><span class="ic ic-amber"><i class="ti ti-receipt"></i></span><div><div class="lab">CPA</div><div class="val num">${money(m.cpa)}</div></div></div>
+      <div class="stat"><span class="ic ic-pink"><i class="ti ti-chart-line"></i></span><div><div class="lab">ROI</div><div class="val num" style="color:${m.roi >= 0 ? "var(--green)" : "var(--red)"}">${pct1(m.roi)}</div></div></div>
+      <div class="stat"><span class="ic ic-blue"><i class="ti ti-percentage"></i></span><div><div class="lab">Sales %</div><div class="val num">${pct1(m.salesPct)}</div></div></div>
     </div>
-    <div class="perf-top"><span class="perf-title">Lead Performance</span>
-      <div class="seg" id="perf-seg">${[["all", "All"], ["realtime", "Real-Time"], ["aged", "Aged"]].map(([v, l]) => `<span data-perf="${v}" class="${DASH_PERF === v ? "on" : ""}">${l}</span>`).join("")}</div></div>
-    <div class="perf-note" id="perf-note">${perfNoteText()}</div>
-    <div class="stat-grid" id="perf-grid">${perfCards()}</div>
-    ${callsSection}
     <div class="two">
       <div class="panel"><div class="panel-h">Lead Types</div><div class="panel-b"><div class="donut-row">
         <svg viewBox="0 0 42 42" width="140" height="140" role="img" aria-label="Lead types by tier">${donut}</svg>
@@ -591,41 +608,16 @@ async function loadDashboard() {
         ${frow("Leads", totalLeads, "#c17d53")}
         ${frow("Contacts", contacts, "#d9a25c")}
         ${frow("Appointments", appts, "#b8845a")}
-        ${frow("Sales", closed.length, "#8f9a6b")}
+        ${frow("Sales", m.closedN, "#8f9a6b")}
       </div></div></div>
     </div>`;
-  wireDashFilter();
-  document.querySelectorAll("#perf-seg span").forEach(s => s.addEventListener("click", () => dashSetPerf(s.dataset.perf)));
-  c.querySelectorAll(".stat .val").forEach(countUp);
 }
-
-// Lead Performance row, scoped to the selected channel (all = realtime+aged)
-function dashPerf() {
-  const [rFrom, rTo] = dashRange();
-  const inR = ds => ds && (!rFrom || ds >= rFrom) && (!rTo || ds <= rTo);
-  const fasn = DASH_ASN.filter(a => inR(((DASH_RANGE.useCreated ? a.leads?.created_at : a.assigned_at) || "").slice(0, 10)));
-  const paid = a => a.source === "realtime" || a.source === "aged";
-  const sel = DASH_PERF === "all" ? fasn.filter(paid) : fasn.filter(a => a.source === DASH_PERF);
-  const leadIds = new Set(sel.map(a => a.lead_id));
-  const closed = DASH_DEALS.filter(d => inR(d.sale_date) && leadIds.has(d.lead_id) && COUNTABLE.has(d.status));
-  const purchased = sel.length, sold = closed.length;
-  const ap = closed.reduce((s, d) => s + (Number(d.annual_premium) || 0), 0);
-  return { purchased, sold, pctSold: purchased ? sold / purchased * 100 : 0, ap };
-}
-function perfCards() {
-  const p = dashPerf();
-  return `
-    <div class="stat"><span class="ic ic-blue"><i class="ti ti-shopping-cart"></i></span><div><div class="lab">Leads purchased</div><div class="val num">${p.purchased.toLocaleString()}</div></div></div>
-    <div class="stat"><span class="ic ic-green"><i class="ti ti-circle-check"></i></span><div><div class="lab">Leads sold</div><div class="val num">${p.sold.toLocaleString()}</div></div></div>
-    <div class="stat"><span class="ic ic-amber"><i class="ti ti-percentage"></i></span><div><div class="lab">% Sold</div><div class="val num">${pct1(p.pctSold)}</div></div></div>
-    <div class="stat"><span class="ic ic-purple"><i class="ti ti-coin"></i></span><div><div class="lab">Annual premium</div><div class="val num" style="color:var(--gold)">${money2(p.ap)}</div></div></div>`;
-}
-const perfNoteText = () => DASH_PERF === "realtime" ? "Real-time lead performance." : DASH_PERF === "aged" ? "Aged lead performance." : "Combined real-time and aged performance.";
+const perfNoteText = () => DASH_PERF === "realtime" ? "Real-time leads only." : DASH_PERF === "aged" ? "Aged leads only." : "All lead sources.";
 function dashSetPerf(ch) {
   DASH_PERF = ch;
   document.querySelectorAll("#perf-seg span").forEach(s => s.classList.toggle("on", s.dataset.perf === ch));
   const note = $("#perf-note"); if (note) note.textContent = perfNoteText();
-  const grid = $("#perf-grid"); if (grid) grid.innerHTML = perfCards();
+  const box = $("#dash-lead"); if (box) { box.innerHTML = dashLeadHTML(); box.querySelectorAll(".stat .val").forEach(countUp); }
 }
 
 function wireDashFilter() {
@@ -1205,11 +1197,17 @@ function pfProfile() {
         ${_f("State", stateSel("pf-b-state", biz.state))}${_f("Zip Code", _i("pf-b-zip", biz.zip))}
         ${_f("Country", _i("pf-b-country", biz.country || "United States"))}<div></div>
       </div>
-      <div style="padding:2px 16px"><div class="np-lab">Licensed States (${(m.licensed_states || []).length} selected)</div>
-        <div class="chip-list" style="padding:0">${(m.licensed_states || []).map(s => `<span class="chip-st">${esc(s)}</span>`).join("") || `<span class="muted2">None set</span>`}</div></div>
+      <div style="padding:2px 16px 14px"><div class="np-lab">Licensed States <span class="muted2">(<span id="pf-lst-count">${(m.licensed_states || []).length}</span> selected)</span></div>
+        <div class="muted2" style="margin:-2px 0 10px">These states apply to <b>all</b> lead types — lead orders and live inbound calls.</div>
+        <div class="pf-days" id="pf-lstates">${US_STATES.map(s => `<span class="pf-day ${(m.licensed_states || []).includes(s) ? "on" : ""}" data-lst="${s}">${s}</span>`).join("")}</div>
+      </div>
     </div>
     <div class="pf-actions"><button class="btn-ghost" onclick="loadProfile()">Cancel</button><button class="btn-gold" id="pf-save"><i class="ti ti-check"></i> Save Settings</button></div>`;
   $("#pf-same").addEventListener("click", () => $("#pf-same").classList.toggle("on"));
+  $("#pf-body").querySelectorAll('.pf-day[data-lst]').forEach(x => x.addEventListener("click", () => {
+    x.classList.toggle("on");
+    const c = $("#pf-lst-count"); if (c) c.textContent = $("#pf-body").querySelectorAll('.pf-day[data-lst].on').length;
+  }));
   $("#pf-av-wrap").addEventListener("click", () => $("#pf-av-file").click());
   $("#pf-av-file").addEventListener("change", e => pfUpload(e.target.files[0], "avatar"));
   $("#pf-idcard-btn").addEventListener("click", () => $("#pf-idcard-file").click());
@@ -1220,7 +1218,9 @@ function pfProfile() {
     const v = id => $(id).value.trim() || null;
     const homeObj = { street: v("#pf-h-street"), city: v("#pf-h-city"), state: $("#pf-h-state").value, zip: v("#pf-h-zip"), country: v("#pf-h-country") };
     const bizObj = same ? { ...homeObj, same_as_home: true } : { street: v("#pf-b-street"), city: v("#pf-b-city"), state: $("#pf-b-state").value, zip: v("#pf-b-zip"), country: v("#pf-b-country"), same_as_home: false };
-    pfPersist({ full_name: full, public_phone: v("#pf-phone"), npn: v("#pf-npn") },
+    // licensed states are the single source of truth for all lead types; clearing call_states makes routing fall back to them
+    const lstates = US_STATES.filter(s => $(`.pf-day[data-lst="${s}"]`)?.classList.contains("on"));
+    pfPersist({ full_name: full, public_phone: v("#pf-phone"), npn: v("#pf-npn"), licensed_states: lstates, call_states: [] },
       { dob: v("#pf-dob"), tz: $("#pf-tz").value, home: homeObj, title: v("#pf-title"), imo: v("#pf-imo"), agency: v("#pf-agency"), website: v("#pf-website"), biz: bizObj }, e.target);
   });
 }
@@ -1279,7 +1279,6 @@ function pfLeadSettings() {
 function pfInbound() {
   const m = ME, hrs = m.call_hours || {};
   const days = new Set(hrs.days || ["Mon", "Tue", "Wed", "Thu", "Fri"]);
-  const selStates = new Set(m.call_states || []);
   const cbx = (id, on, lab) => `<label class="cbx ${on ? "on" : ""}" data-cb="${id}"><span class="box"><i class="ti ti-check"></i></span>${lab}</label>`;
   $("#pf-body").innerHTML = `
     <div class="pf-card"><div class="pf-card-h2"><b><i class="ti ti-phone-incoming"></i> Availability</b><span>Live inbound calls route to you only when you're available</span></div>
@@ -1300,15 +1299,12 @@ function pfInbound() {
       </div>
     </div>
     <div class="pf-card"><div class="pf-card-h2"><b><i class="ti ti-map-pin"></i> Call states</b><span>Which states you'll take calls for</span></div>
-      <div style="padding:14px 16px">
-        <div class="pf-days">${US_STATES.map(s => `<span class="pf-day ${selStates.has(s) ? "on" : ""}" data-st="${s}">${s}</span>`).join("")}</div>
-        <div class="muted2" style="margin-top:10px">Leave all unselected to use your licensed states (${(m.licensed_states || []).length} set).</div>
-      </div>
+      <div style="padding:14px 16px"><div class="muted2">Inbound calls route by your <b>Licensed States</b> (${(m.licensed_states || []).length} set). Manage them in <a href="#" data-goto-profile class="g">Profile</a> — one list now covers lead orders and calls.</div></div>
     </div>
     <div class="pf-actions"><button class="btn-ghost" onclick="loadProfile()">Cancel</button><button class="btn-gold" id="pf-save"><i class="ti ti-check"></i> Save Settings</button></div>`;
   $("#pf-body").querySelectorAll("[data-cb]").forEach(x => x.addEventListener("click", () => x.classList.toggle("on")));
   $("#pf-body").querySelectorAll(".pf-day[data-day]").forEach(x => x.addEventListener("click", () => x.classList.toggle("on")));
-  $("#pf-body").querySelectorAll(".pf-day[data-st]").forEach(x => x.addEventListener("click", () => x.classList.toggle("on")));
+  $("#pf-body").querySelector("[data-goto-profile]")?.addEventListener("click", e => { e.preventDefault(); PF_TAB = "profile"; loadProfile(); });
   $("#pf-save").addEventListener("click", async e => {
     const on = id => $(`[data-cb="${id}"]`).classList.contains("on");
     const numOrNull = id => { const val = $(id).value.trim(); return val === "" ? null : Number(val); };
@@ -1318,7 +1314,6 @@ function pfInbound() {
       forward_number: $("#in-fwd").value.trim() || null,
       call_max_concurrent: numOrNull("#in-conc") ?? 1,
       call_daily_cap: numOrNull("#in-cap"),
-      call_states: US_STATES.filter(s => $(`.pf-day[data-st="${s}"]`).classList.contains("on")),
       call_hours: { days: PF_WEEK.filter(d => $(`.pf-day[data-day="${d}"]`).classList.contains("on")), start: $("#in-start").value || null, end: $("#in-end").value || null },
     }, null, e.target);
     if (ok) {  // keep the nav availability toggle in sync
