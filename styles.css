@@ -519,6 +519,12 @@ textarea.in{resize:vertical;min-height:64px;line-height:1.5}
 .dfp-pill{font-size:12px;background:var(--card-2);color:var(--tx2);border:1px solid var(--line);border-radius:20px;padding:7px 14px;cursor:pointer}
 .dfp-pill:hover{border-color:var(--line-2)}
 .dfp-pill.on{background:var(--gold-grad);color:var(--gold-ink);font-weight:600;border-color:transparent}
+.flt-wrap{display:flex;flex-wrap:wrap;gap:7px}
+.flt-chip{font-size:12px;background:var(--card-2);color:var(--tx2);border:1px solid var(--line);border-radius:20px;padding:6px 12px;cursor:pointer}
+.flt-chip:hover{border-color:var(--line-2)}
+.flt-chip.on{background:var(--gold-grad);color:var(--gold-ink);font-weight:600;border-color:transparent}
+#dash-filters-btn.on{border-color:var(--gold);color:var(--gold-2)}
+#dash-filters-btn .flt-n{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;margin-left:3px;border-radius:9px;background:var(--gold);color:var(--gold-ink);font-size:10.5px;font-weight:700}
 
 /* ---------- inbound calls + wallet + availability (2026-07-01) ---------- */
 .av-toggle{display:flex;align-items:center;gap:9px;box-sizing:border-box;width:100%;padding:7px 11px;margin:4px 0 6px;border-radius:10px;background:var(--card-2);border:1px solid var(--line);font-size:12.5px;color:var(--tx2);transition:background .15s,border-color .15s}

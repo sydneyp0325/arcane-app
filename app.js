@@ -483,6 +483,7 @@ function go(route) {
 const COUNTABLE = new Set(["underwriting", "approved", "issued"]);
 const DASH_PRESETS = [["today", "Today"], ["yesterday", "Yesterday"], ["last7", "Last 7 days"], ["last30", "Last 30 days"], ["thismonth", "This month"], ["lastmonth", "Last month"]];
 let DASH_RANGE = { preset: "last30", from: null, to: null, useCreated: false };
+let DASH_FILTERS = { types: new Set(), disps: new Set() };   // lead-type + disposition filters (empty = all)
 let DASH_PERF = "all", DASH_ASN = [], DASH_DEALS = [], DASH_OPENTASKS = 0, DASH_TYPENAME = {};   // Lead Performance channel toggle (all/realtime/aged) scopes the whole lead panel
 function rangeFor(preset) {
   const iso = x => x.toISOString().slice(0, 10);
@@ -582,9 +583,12 @@ function dashMetrics() {
   const inR = ds => ds && (!rFrom || ds >= rFrom) && (!rTo || ds <= rTo);
   let fasn = DASH_ASN.filter(a => inR(((DASH_RANGE.useCreated ? a.leads?.created_at : a.assigned_at) || "").slice(0, 10)));
   if (DASH_PERF !== "all") fasn = fasn.filter(a => a.source === DASH_PERF);
+  if (DASH_FILTERS.types.size) fasn = fasn.filter(a => DASH_FILTERS.types.has(a.leads?.lead_type_id));
+  if (DASH_FILTERS.disps.size) fasn = fasn.filter(a => DASH_FILTERS.disps.has(a.disposition || "new_lead"));
   const leadIds = new Set(fasn.map(a => a.lead_id));
   let fdeals = DASH_DEALS.filter(d => inR(d.sale_date));
-  if (DASH_PERF !== "all") fdeals = fdeals.filter(d => d.lead_id && leadIds.has(d.lead_id));
+  const scopeDeals = DASH_PERF !== "all" || DASH_FILTERS.types.size || DASH_FILTERS.disps.size;
+  if (scopeDeals) fdeals = fdeals.filter(d => d.lead_id && leadIds.has(d.lead_id));
   const totalLeads = fasn.length;
   const contacts = fasn.filter(a => a.disposition && a.disposition !== "new_lead").length;
   const appts = fasn.filter(a => a.disposition === "appt_booked").length;
@@ -638,11 +642,16 @@ function dashLeadHTML() {
     </div>`;
 }
 const perfNoteText = () => DASH_PERF === "realtime" ? "Real-time leads only." : DASH_PERF === "aged" ? "Aged leads only." : "All lead sources.";
+function refreshDashLead() {
+  const box = $("#dash-lead"); if (box) { box.innerHTML = dashLeadHTML(); box.querySelectorAll(".stat .val").forEach(countUp); }
+  const n = DASH_FILTERS.types.size + DASH_FILTERS.disps.size;
+  const btn = $("#dash-filters-btn"); if (btn) { btn.classList.toggle("on", n > 0); btn.innerHTML = `<i class="ti ti-filter"></i> Filters${n ? ` <span class="flt-n">${n}</span>` : ""}`; }
+}
 function dashSetPerf(ch) {
   DASH_PERF = ch;
   document.querySelectorAll("#perf-seg span").forEach(s => s.classList.toggle("on", s.dataset.perf === ch));
   const note = $("#perf-note"); if (note) note.textContent = perfNoteText();
-  const box = $("#dash-lead"); if (box) { box.innerHTML = dashLeadHTML(); box.querySelectorAll(".stat .val").forEach(countUp); }
+  refreshDashLead();
 }
 
 function wireDashFilter() {
@@ -657,10 +666,31 @@ function toggleDashFilters() {
   const wrap = document.querySelector(".dash-filter-wrap"); if (!wrap) return;
   const pop = document.createElement("div");
   pop.id = "dash-filters-pop"; pop.className = "dash-filter-pop"; pop.style.width = "260px";
-  pop.innerHTML = `<div class="np-lab" style="margin-bottom:10px">Filters</div>
-    <div class="muted2" style="font-size:12.5px;line-height:1.5">Lead type, channel, and status filters are coming with the analytics build.</div>`;
+  // options come from the data actually in range/hand (types + dispositions present)
+  const typeIds = [...new Set(DASH_ASN.map(a => a.leads?.lead_type_id).filter(Boolean))];
+  const typeOpts = typeIds.map(id => [id, DASH_TYPENAME[id] || "Unspecified"]);
+  const dispIds = [...new Set(DASH_ASN.map(a => a.disposition || "new_lead"))];
+  const chip = (on, val, lab, kind) => `<span class="flt-chip ${on ? "on" : ""}" data-kind="${kind}" data-val="${esc(String(val))}">${esc(lab)}</span>`;
+  pop.innerHTML = `<div class="np-lab" style="margin-bottom:8px">Lead type</div>
+    <div class="flt-wrap">${typeOpts.length ? typeOpts.map(([id, lab]) => chip(DASH_FILTERS.types.has(id), id, lab, "type")).join("") : `<span class="muted2">No lead types in data</span>`}</div>
+    <div class="np-lab" style="margin:14px 0 8px">Disposition</div>
+    <div class="flt-wrap">${dispIds.map(d => chip(DASH_FILTERS.disps.has(d), d, dispLabel(d), "disp")).join("")}</div>
+    <div style="display:flex;justify-content:space-between;margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+      <button class="btn-ghost" id="flt-clear"><i class="ti ti-x"></i> Clear</button>
+      <button class="btn-gold" id="flt-done">Done</button>
+    </div>`;
   wrap.appendChild(pop);
   pop.addEventListener("click", e => e.stopPropagation());
+  pop.querySelectorAll(".flt-chip").forEach(ch2 => ch2.addEventListener("click", () => {
+    const set = ch2.dataset.kind === "type" ? DASH_FILTERS.types : DASH_FILTERS.disps;
+    const raw = ch2.dataset.val;
+    // type ids may be numbers; recover the original-typed value from the data
+    const key = ch2.dataset.kind === "type" ? typeIds.find(t => String(t) === raw) : raw;
+    if (set.has(key)) set.delete(key); else set.add(key);
+    ch2.classList.toggle("on"); refreshDashLead();
+  }));
+  $("#flt-clear").addEventListener("click", () => { DASH_FILTERS = { types: new Set(), disps: new Set() }; pop.querySelectorAll(".flt-chip").forEach(x => x.classList.remove("on")); refreshDashLead(); });
+  $("#flt-done").addEventListener("click", () => { pop.remove(); document.removeEventListener("click", outside); });
   const outside = ev => { if (!wrap.contains(ev.target)) { pop.remove(); document.removeEventListener("click", outside); } };
   setTimeout(() => document.addEventListener("click", outside), 0);
 }
