@@ -22,6 +22,7 @@ let VIEW_TENANT_ID = null;  // platform-admin "viewing as" tenant (context switc
 let ALL_TENANTS = [];       // platform admin only: all tenants, for the switcher
 let DEV_MANAGING = null;    // dev console: tenant id being managed ("enter agency")
 let HAS_DOWNLINE = false;   // current agent has agents below them → show the Team view
+let WALLET_BAL = 0;         // current agent's wallet balance, shown in the nav
 let ROUTE = "dashboard";
 const $ = (s, r = document) => r.querySelector(s);
 const money = n => "$" + Math.round(Number(n) || 0).toLocaleString();
@@ -179,6 +180,7 @@ async function loadMe() {
   // Team view appears for admins (whole tenant) and anyone with a downline.
   HAS_DOWNLINE = ME?.access_level === "admin" || ME?.is_platform_admin || false;
   try { if (!HAS_DOWNLINE) HAS_DOWNLINE = (await sb.rpc("has_downline")).data === true; } catch { }
+  try { const wb = (await sb.from("wallets").select("balance").eq("agent_id", ME.id).maybeSingle()).data; WALLET_BAL = wb ? +wb.balance : 0; } catch { }
   TENANT = null;
   if (ME?.tenant_id) {
     try { TENANT = (await sb.from("tenants").select("id,slug,name,brand_name,logo_url,settings").eq("id", ME.tenant_id).maybeSingle()).data; } catch { }
@@ -379,7 +381,7 @@ function renderApp() {
             <span class="av-lbl">Available for calls</span>
             <label class="av-sw"><input type="checkbox" id="av-check" ${ME.available_for_calls ? "checked" : ""}><span class="av-track"></span></label>
           </div>
-          <a class="nav-i" data-route="wallet"><i class="ti ti-wallet"></i>Wallet</a>` : ""}
+          <a class="nav-i" data-route="wallet"><i class="ti ti-wallet"></i>Wallet<span class="nav-bal" id="nav-bal">${money(WALLET_BAL)}</span></a>` : ""}
           <div class="agent-chip">
             <div class="av">${esc(initials(ME.full_name))}</div>
             <div><div class="nm">${esc((ME.full_name || "").split(" ")[0] || "Agent")}</div><div class="rl">${esc(ME.role_title || "Agent")}</div></div>
@@ -2639,6 +2641,7 @@ function renderWallet(w, txns) {
   WALLET_DATA = w;
   const c = $("#content");
   const bal = w ? +w.balance : 0;
+  WALLET_BAL = bal; const nb = document.getElementById("nav-bal"); if (nb) nb.textContent = money(bal);
   const hasCard = !!w?.default_pm_id;
   const rows = txns.map(t => `<tr>
       <td>${fmtDT(t.created_at)}</td>
