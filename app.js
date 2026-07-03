@@ -166,16 +166,17 @@ async function boot() {
 async function loadMe() {
   const { data: { user } } = await sb.auth.getUser();
   const email = user?.email || null;
-  // per-tenant signup: ?tenant=1010 lands NEW agents in that tenant
-  const urlTenant = new URLSearchParams(location.search).get("tenant");
-  if (urlTenant) localStorage.setItem("arcane_tenant", urlTenant.toLowerCase());
-  const tenant = localStorage.getItem("arcane_tenant") || "arcane";
+  // per-agency signup via invite code: ?invite=<CODE> lands NEW agents in that agency
+  const urlInvite = new URLSearchParams(location.search).get("invite");
+  if (urlInvite) localStorage.setItem("arcane_invite", urlInvite.trim());
+  const inviteCode = localStorage.getItem("arcane_invite") || null;
   let data = null;
   // find-or-create (or claim by email) this user's agent row
-  try { data = (await sb.rpc("bootstrap_agent", { p_email: email, p_full_name: user?.user_metadata?.full_name || null, p_tenant_slug: tenant })).data; }
+  try { data = (await sb.rpc("bootstrap_agent", { p_email: email, p_full_name: user?.user_metadata?.full_name || null, p_invite_code: inviteCode })).data; }
   catch (e) { console.warn("bootstrap_agent failed:", e?.message || e); }
   if (!data && user) { try { data = (await sb.from("agents").select("*").eq("user_id", user.id).maybeSingle()).data; } catch { } }
   ME = data || { id: user?.id, full_name: email, email };
+  if (ME?.tenant_id) localStorage.removeItem("arcane_invite"); // placed — don't leak to a future signup
   VIEW_TENANT_ID = ME?.tenant_id || null;
   // Team view appears for admins (whole tenant) and anyone with a downline.
   HAS_DOWNLINE = ME?.access_level === "admin" || ME?.is_platform_admin || false;
@@ -183,7 +184,7 @@ async function loadMe() {
   try { const wb = (await sb.from("wallets").select("balance").eq("agent_id", ME.id).maybeSingle()).data; WALLET_BAL = wb ? +wb.balance : 0; } catch { }
   TENANT = null;
   if (ME?.tenant_id) {
-    try { TENANT = (await sb.from("tenants").select("id,slug,name,brand_name,logo_url,settings").eq("id", ME.tenant_id).maybeSingle()).data; } catch { }
+    try { TENANT = (await sb.from("tenants").select("id,slug,name,brand_name,logo_url,settings,invite_code").eq("id", ME.tenant_id).maybeSingle()).data; } catch { }
   }
   // apply onboarding profile stashed during an email-confirm signup
   const _onb = localStorage.getItem("arcane_onb");
@@ -205,9 +206,9 @@ async function loadMe() {
 // ---------------------------------------------------------------- login / onboarding (Supabase Auth)
 let BRAND_PREVIEW = null;   // agency branding shown pre-auth (from ?tenant=)
 async function loadBrandPreview() {
-  const slug = new URLSearchParams(location.search).get("tenant") || localStorage.getItem("arcane_tenant");
-  if (!slug) { BRAND_PREVIEW = null; return; }
-  try { BRAND_PREVIEW = (await sb.rpc("public_tenant_brand", { p_slug: slug })).data?.[0] || null; } catch { BRAND_PREVIEW = null; }
+  const code = new URLSearchParams(location.search).get("invite") || localStorage.getItem("arcane_invite");
+  if (!code) { BRAND_PREVIEW = null; return; }
+  try { BRAND_PREVIEW = (await sb.rpc("resolve_invite", { p_code: code })).data?.[0] || null; } catch { BRAND_PREVIEW = null; }
 }
 function authBrandHTML() {
   const logo = BRAND_PREVIEW?.logo_url || "logo.svg?v=1";
@@ -311,8 +312,8 @@ function onbNext(step) {
 async function onbSubmit() {
   const btn = $("#onb-finish"), err = $("#onb-err");
   err.style.color = "var(--red)"; err.textContent = ""; btn.disabled = true; btn.textContent = "Creating…";
-  const tenant = (new URLSearchParams(location.search).get("tenant") || localStorage.getItem("arcane_tenant") || "arcane").toLowerCase();
-  localStorage.setItem("arcane_tenant", tenant);
+  const invite = (new URLSearchParams(location.search).get("invite") || localStorage.getItem("arcane_invite") || "").trim();
+  if (invite) localStorage.setItem("arcane_invite", invite);
   const { data, error } = await sb.auth.signUp({ email: ONB.email, password: ONB.password, options: { data: { full_name: ONB.full_name }, emailRedirectTo: window.location.origin + window.location.pathname } });
   if (error) { btn.disabled = false; btn.textContent = "Create account"; err.textContent = error.message; return; }
   if (!data.session) {
@@ -323,9 +324,9 @@ async function onbSubmit() {
   await finishOnboarding();
 }
 async function finishOnboarding() {
-  const tenant = localStorage.getItem("arcane_tenant") || "arcane";
+  const invite = localStorage.getItem("arcane_invite") || null;
   let agent = null;
-  try { agent = (await sb.rpc("bootstrap_agent", { p_email: ONB.email || null, p_full_name: ONB.full_name || null, p_tenant_slug: tenant })).data; } catch (e) { console.warn(e); }
+  try { agent = (await sb.rpc("bootstrap_agent", { p_email: ONB.email || null, p_full_name: ONB.full_name || null, p_invite_code: invite })).data; } catch (e) { console.warn(e); }
   if (agent?.id) {
     const patch = {};
     if (ONB.npn) patch.npn = ONB.npn;
@@ -1474,9 +1475,10 @@ async function loadAgents() {
   c.innerHTML = head + (list.length
     ? `<table class="data-tbl"><thead><tr><th>Agent</th><th>Role</th><th>Inbound</th><th>Forward #</th><th>Wallet</th><th>States</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
     : `<div class="coming"><div class="badge"><i class="ti ti-users"></i></div><b>No agents yet</b><div>Share your signup link to onboard agents.</div></div>`);
-  $("#invite-agent")?.addEventListener("click", () => {
-    const slug = TENANT?.slug || "";
-    const link = `${location.origin}${location.pathname}?tenant=${slug}`;
+  $("#invite-agent")?.addEventListener("click", async () => {
+    let code = TENANT?.invite_code;
+    if (!code) { try { code = (await sb.rpc("agency_invite_code")).data; } catch { } }
+    const link = code ? `${location.origin}${location.pathname}?invite=${code}` : `${location.origin}${location.pathname}`;
     navigator.clipboard?.writeText(link); toast("Agent signup link copied");
   });
   c.querySelectorAll("[data-role]").forEach(b => b.addEventListener("click", () => setAgentRole(b.dataset.agent, b.dataset.role, b.textContent.trim())));
@@ -1498,7 +1500,8 @@ async function loadSetup() {
   const FN = "https://cdctxwbkpjdkytwstvoq.supabase.co/functions/v1";
   const routeUrl = `${FN}/trackdrive-inbound-route?tenant=${t.slug || ""}`;
   const postbackUrl = `${FN}/trackdrive-inbound-postback?tenant=${t.slug || ""}`;
-  const inviteUrl = `${location.origin}${location.pathname}?tenant=${t.slug || ""}`;
+  const inviteCode = t.invite_code || "";
+  const inviteUrl = inviteCode ? `${location.origin}${location.pathname}?invite=${inviteCode}` : `${location.origin}${location.pathname}`;
   const brandOk = !!(t.logo_url && t.brand_name);
   const priceOk = s.call_price != null && s.call_price !== "";
   const stripeOk = !!t.stripe_account;
@@ -1523,11 +1526,20 @@ async function loadSetup() {
           <div class="pf-grid" style="padding:8px 0 0"><div class="field"><label>Trackdrive account label</label><input class="in" id="setup-tdref" value="${esc(t.trackdrive_ref || "")}" placeholder="e.g. 1010-td"></div><div class="field" style="align-self:flex-end"><button class="btn-gold" id="setup-tdsave"><i class="ti ti-check"></i> Save &amp; mark configured</button></div></div>
         </div></div>
       <div class="pf-card">${hdr("ti-user-plus", "Invite agents", false).replace('class="pill yellow">To do', 'class="pill grey">Anytime')}
-        <div class="setup-b"><div class="url-row"><code>${esc(inviteUrl)}</code><button class="btn-ghost sm" data-copy="${esc(inviteUrl)}"><i class="ti ti-copy"></i></button></div><div class="muted2">Share with your agents — they sign up straight into ${esc(t.brand_name || "your agency")}.</div></div></div>
+        <div class="setup-b">
+          <div class="muted2" style="margin-bottom:6px">Share this link — anyone who signs up through it joins <b>${esc(t.brand_name || "your agency")}</b>. The code is what routes them to you, so keep it private.</div>
+          <div class="url-row"><code>${esc(inviteUrl)}</code><button class="btn-ghost sm" data-copy="${esc(inviteUrl)}"><i class="ti ti-copy"></i></button></div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:8px"><span class="muted2">Invite code: <b>${esc(inviteCode || "—")}</b></span><button class="btn-ghost sm" id="setup-regen"><i class="ti ti-refresh"></i> Regenerate</button></div>
+        </div></div>
     </div>`;
   c.querySelectorAll("[data-goto]").forEach(b => b.addEventListener("click", () => go(b.dataset.goto)));
   c.querySelectorAll("[data-copy]").forEach(b => b.addEventListener("click", () => { navigator.clipboard?.writeText(b.dataset.copy); toast("Copied"); }));
   $("#setup-stripe")?.addEventListener("click", () => toast("Stripe Connect — set up with the Arcane team during onboarding (self-serve connect coming)"));
+  $("#setup-regen")?.addEventListener("click", async () => {
+    if (!confirm("Regenerate the invite code? The old link will stop working.")) return;
+    try { const code = (await sb.rpc("regenerate_invite_code")).data; if (TENANT && TENANT.id === tid) TENANT.invite_code = code; toast("New invite code generated"); loadSetup(); }
+    catch (e) { toast(e.message || "Couldn't regenerate"); }
+  });
   $("#setup-tdsave")?.addEventListener("click", async e => {
     const ref = $("#setup-tdref").value.trim() || null;
     e.target.disabled = true; e.target.textContent = "Saving…";
