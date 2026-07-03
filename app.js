@@ -151,9 +151,11 @@ function navFor(mode) {
     return NAV_DEV.map(navItem).join("");
   }
   // agent app — agency-admin areas now live under Settings → Admin (not the sidebar)
+  const admin = isAdminUser();
+  const tools = NAV_TOOLS.map(n => (n.id === "import" && admin) ? navItem({ ...n, lock: false }) : navItem(n)).join("");
   return NAV_MAIN.map(navItem).join("")
     + (HAS_DOWNLINE ? navItem({ id: "team", icon: "ti-sitemap", label: "Team" }) : "")
-    + `<div class="nav-sec">TOOLS</div>` + NAV_TOOLS.map(navItem).join("");
+    + `<div class="nav-sec">TOOLS</div>` + tools;
 }
 
 // ---------------------------------------------------------------- boot (Supabase Auth)
@@ -367,6 +369,7 @@ async function signOut() { unsubscribeCalls(); await sb.auth.signOut(); location
 // ---- white-label branding (tenant logo + name in the header) ----
 // the tenant currently being viewed/managed (platform admin can switch; everyone else = their own)
 function activeTenantId() { return VIEW_TENANT_ID || ME?.tenant_id || null; }
+function isAdminUser() { return ME?.access_level === "admin" || ME?.is_platform_admin === true; }
 function brandBits() {
   const name = TENANT?.brand_name || "ARCANE";
   const sub = (TENANT?.name && TENANT.name !== name) ? TENANT.name : (TENANT ? "" : "LEAD SOLUTIONS");
@@ -469,6 +472,7 @@ function go(route) {
   if (route === "calendar") return loadCalendar();
   if (route === "tasks") return loadTasks();
   if (route === "settings") return loadProfile();
+  if (route === "import") { PF_TAB = "admin"; ADMIN_TAB = "import"; return loadProfile(); }
   if (route === "agencies") return loadAgencies();
   if (route === "agents") return loadAgents();
   if (route === "setup") return loadSetup();
@@ -1185,6 +1189,8 @@ const ADMIN_SUBS = [
   ["tenant",     "Agency",              "ti-building",           () => pfTenant()],
   ["setup",      "Setup",               "ti-rocket",             () => loadSetup()],
   ["agents",     "Agents",              "ti-users",              () => loadAgents()],
+  ["import",     "Import leads",        "ti-upload",             () => loadImport()],
+  ["pool",       "Unassigned",          "ti-user-question",      () => loadUnassigned()],
   ["calllog",    "Call log",            "ti-phone-calls",        () => loadAdminCallLog()],
   ["admintiers", "Pricing & tiers",     "ti-adjustments-dollar", () => loadAdminTiers()],
   ["catalog",    "Carriers & products", "ti-building-bank",      () => loadCatalogAdmin()],
@@ -2768,6 +2774,114 @@ async function applyCallDisposition(callId, disp) {
     openDealModal({ id: l.id || cl.lead_id, first_name: l.first_name, last_name: l.last_name, phone: l.phone || cl.caller_number, email: l.email }, { callId });
   }
   renderCalls();
+}
+
+// ---- Import leads (admin, bulk CSV) ----
+const IMPORT_FIELDS = [["first_name", "First name"], ["last_name", "Last name"], ["phone", "Phone"], ["email", "Email"], ["state", "State"], ["dob", "Date of birth"], ["gender", "Gender"], ["source", "Source"]];
+function parseCSV(text) {
+  const rows = []; let row = [], cur = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+    else if (c === '"') q = true;
+    else if (c === ",") { row.push(cur); cur = ""; }
+    else if (c === "\r") { /* skip */ }
+    else if (c === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+    else cur += c;
+  }
+  if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+  return rows.filter(r => r.some(x => (x || "").trim() !== ""));
+}
+let IMPORT = null;
+async function loadImport() {
+  const c = adminHost();
+  c.innerHTML = `<div class="page-title">Import leads</div><div class="page-sub">Upload a CSV to add leads to your agency. Duplicates (by phone or email) are skipped automatically.</div>
+    <div class="pf-card" style="max-width:640px"><div class="pf-card-h2"><b><i class="ti ti-file-upload"></i> Upload CSV</b><span>First row = column headers</span></div>
+      <div style="padding:16px">
+        <input type="file" id="imp-file" accept=".csv,text/csv" hidden>
+        <button class="btn-gold" id="imp-pick"><i class="ti ti-upload"></i> Choose CSV file</button>
+        <span class="muted2" id="imp-fname" style="margin-left:10px"></span>
+        <div class="muted2" style="margin-top:12px">We can map: name, phone, email, state, date of birth, gender, source. Each row needs at least a phone or email.</div>
+      </div>
+    </div>
+    <div id="imp-config"></div>`;
+  $("#imp-pick").onclick = () => $("#imp-file").click();
+  $("#imp-file").onchange = e => { const f = e.target.files[0]; if (!f) return; $("#imp-fname").textContent = f.name; const rd = new FileReader(); rd.onload = () => onImportFile(rd.result); rd.readAsText(f); };
+}
+function onImportFile(text) {
+  const rows = parseCSV(text);
+  if (rows.length < 2) { toast("CSV needs a header row plus at least one data row"); return; }
+  const headers = rows[0].map(h => (h || "").trim());
+  const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
+  const ALIASES = { first_name: ["firstname", "first", "fname", "givenname"], last_name: ["lastname", "last", "lname", "surname"], phone: ["phone", "phonenumber", "mobile", "cell", "tel"], email: ["email", "emailaddress"], state: ["state", "st", "region"], dob: ["dob", "dateofbirth", "birthdate", "birthday"], gender: ["gender", "sex"], source: ["source", "leadsource"] };
+  const map = {};
+  IMPORT_FIELDS.forEach(([id]) => { const idx = headers.findIndex(h => norm(h) === id || (ALIASES[id] || []).includes(norm(h))); if (idx >= 0) map[id] = idx; });
+  IMPORT = { headers, data: rows.slice(1), map };
+  renderImportConfig();
+}
+async function renderImportConfig() {
+  const box = $("#imp-config"); if (!box || !IMPORT) return;
+  let agents = [];
+  try { agents = (await sb.rpc("platform_agents", { p_tenant: activeTenantId() })).data || []; } catch { }
+  if (!agents.length) { try { agents = (await sb.from("agents").select("id,full_name,email").eq("tenant_id", activeTenantId())).data || []; } catch { } }
+  const colOpts = sel => `<option value="">— skip —</option>` + IMPORT.headers.map((h, i) => `<option value="${i}" ${sel === i ? "selected" : ""}>${esc(h || ("Column " + (i + 1)))}</option>`).join("");
+  box.innerHTML = `
+    <div class="pf-card" style="max-width:640px;margin-top:14px"><div class="pf-card-h2"><b><i class="ti ti-columns"></i> Map columns</b><span>${IMPORT.data.length} rows found</span></div>
+      <div class="pf-grid" style="padding:14px 16px">${IMPORT_FIELDS.map(([id, lab]) => `<div class="field"><label>${lab}</label><select class="in imp-map" data-f="${id}">${colOpts(IMPORT.map[id])}</select></div>`).join("")}</div>
+    </div>
+    <div class="pf-card" style="max-width:860px;margin-top:14px"><div class="pf-card-h2"><b><i class="ti ti-eye"></i> Preview</b><span>first 5 rows</span></div>
+      <div style="overflow:auto;padding:0 2px 6px"><table class="data-tbl"><thead><tr>${IMPORT_FIELDS.map(([, lab]) => `<th>${lab}</th>`).join("")}</tr></thead><tbody id="imp-prev"></tbody></table></div>
+    </div>
+    <div class="pf-card" style="max-width:640px;margin-top:14px"><div class="pf-card-h2"><b><i class="ti ti-user-check"></i> Assign</b><span>optional</span></div>
+      <div style="padding:14px 16px"><select class="in" id="imp-assign" style="max-width:340px"><option value="">Leave unassigned (pool)</option>${agents.map(a => `<option value="${a.agent_id || a.id}">${esc(a.full_name || a.email)}</option>`).join("")}</select>
+        <div class="muted2" style="margin-top:8px">Assigned leads go straight to that agent. Unassigned leads wait in the pool (Settings → Admin → Unassigned).</div></div>
+    </div>
+    <div style="max-width:640px;margin-top:14px;display:flex;gap:12px;align-items:center"><button class="btn-gold" id="imp-go"><i class="ti ti-database-import"></i> Import ${IMPORT.data.length} leads</button><span class="muted2" id="imp-status"></span></div>`;
+  const renderPrev = () => { $("#imp-prev").innerHTML = IMPORT.data.slice(0, 5).map(r => `<tr>${IMPORT_FIELDS.map(([id]) => { const idx = IMPORT.map[id]; return `<td>${idx != null && idx !== "" ? esc(r[idx] || "") : '<span class="muted2">—</span>'}</td>`; }).join("")}</tr>`).join(""); };
+  renderPrev();
+  box.querySelectorAll(".imp-map").forEach(s => s.onchange = () => { const v = s.value; if (v === "") delete IMPORT.map[s.dataset.f]; else IMPORT.map[s.dataset.f] = +v; renderPrev(); });
+  $("#imp-go").onclick = runImport;
+}
+async function runImport() {
+  if (IMPORT.map.phone == null && IMPORT.map.email == null) { toast("Map at least a phone or email column"); return; }
+  const btn = $("#imp-go"), st = $("#imp-status");
+  const rows = IMPORT.data.map(r => { const o = {}; IMPORT_FIELDS.forEach(([id]) => { const idx = IMPORT.map[id]; if (idx != null && idx !== "") o[id] = (r[idx] || "").trim(); }); return o; }).filter(o => o.phone || o.email);
+  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Importing…`;
+  const { data, error } = await sb.rpc("import_leads", { p_rows: rows, p_assign_to: $("#imp-assign").value || null });
+  btn.disabled = false; btn.innerHTML = `<i class="ti ti-database-import"></i> Import ${IMPORT.data.length} leads`;
+  if (error) { st.style.color = "var(--red)"; st.textContent = error.message; return; }
+  st.style.color = "var(--green)"; st.textContent = `Created ${data.created} · ${data.duplicates} duplicate${data.duplicates === 1 ? "" : "s"} skipped${data.assigned ? ` · ${data.assigned} assigned` : ""}${data.errors ? ` · ${data.errors} error${data.errors === 1 ? "" : "s"}` : ""}`;
+  toast(`Imported ${data.created} leads`);
+}
+
+// ---- Unassigned pool + manual assign (admin) ----
+async function loadUnassigned() {
+  const c = adminHost();
+  const head = `<div class="page-title">Unassigned leads</div><div class="page-sub">Leads in your pool with no agent yet — assign them manually.</div>`;
+  c.innerHTML = head + skelTable(6);
+  let rows = [], agents = [];
+  try { rows = (await sb.rpc("unassigned_leads")).data || []; } catch { c.innerHTML = head + `<div class="coming"><div class="badge"><i class="ti ti-lock"></i></div><b>Admins only</b></div>`; return; }
+  try { agents = (await sb.rpc("platform_agents", { p_tenant: activeTenantId() })).data || []; } catch { }
+  if (!agents.length) { try { agents = (await sb.from("agents").select("id,full_name,email").eq("tenant_id", activeTenantId())).data || []; } catch { } }
+  if (!rows.length) { c.innerHTML = head + `<div class="coming"><div class="badge"><i class="ti ti-user-question"></i></div><b>Pool is empty</b><div>Imported or released leads with no owner show up here.</div></div>`; return; }
+  const agentOpts = agents.map(a => `<option value="${a.agent_id || a.id}">${esc(a.full_name || a.email)}</option>`).join("");
+  const body = rows.map(r => `<tr data-lead="${r.id}">
+    <td>${esc(((r.first_name || "") + " " + (r.last_name || "")).trim()) || "—"}</td>
+    <td>${esc(r.phone || "")}<div class="muted2">${esc(r.email || "")}</div></td>
+    <td>${esc(r.state || "—")}</td>
+    <td>${esc(r.source || "—")}</td>
+    <td>${fmtDT(r.created_at)}</td>
+    <td style="text-align:right;white-space:nowrap"><select class="in u-agent" style="width:150px;display:inline-block">${agentOpts}</select> <button class="btn-gold sm" data-assign="${r.id}">Assign</button></td>
+  </tr>`).join("");
+  c.innerHTML = head + `<div class="muted2" style="margin-bottom:8px">${rows.length} lead${rows.length === 1 ? "" : "s"} in the pool.</div>
+    <table class="data-tbl"><thead><tr><th>Name</th><th>Contact</th><th>State</th><th>Source</th><th>Added</th><th></th></tr></thead><tbody>${body}</tbody></table>`;
+  c.querySelectorAll("[data-assign]").forEach(b => b.onclick = async () => {
+    const tr = b.closest("tr"); const agent = tr.querySelector(".u-agent").value; if (!agent) return;
+    b.disabled = true; b.textContent = "…";
+    const { error } = await sb.rpc("admin_assign_lead", { p_lead: b.dataset.assign, p_agent: agent });
+    if (error) { b.disabled = false; b.textContent = "Assign"; toast(error.message); return; }
+    tr.style.transition = "opacity .3s"; tr.style.opacity = "0"; setTimeout(() => tr.remove(), 300); toast("Lead assigned");
+  });
 }
 
 async function loadWallet() {
