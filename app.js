@@ -1155,6 +1155,7 @@ const ADMIN_SUBS = [
   ["tenant",     "Agency",              "ti-building",           () => pfTenant()],
   ["setup",      "Setup",               "ti-rocket",             () => loadSetup()],
   ["agents",     "Agents",              "ti-users",              () => loadAgents()],
+  ["calllog",    "Call log",            "ti-phone-calls",        () => loadAdminCallLog()],
   ["admintiers", "Pricing & tiers",     "ti-adjustments-dollar", () => loadAdminTiers()],
   ["catalog",    "Carriers & products", "ti-building-bank",      () => loadCatalogAdmin()],
 ];
@@ -1508,6 +1509,44 @@ async function setAgentRole(agentId, role, label) {
   const { error } = await sb.from("agents").update({ access_level: role }).eq("id", agentId);
   if (error) { alert(error.message); return; }
   toast("Role updated"); loadAgents();
+}
+
+// Tenant-wide call log (all agents incl. missed) — admin view.
+async function loadAdminCallLog() {
+  const c = adminHost();
+  const head = `<div class="page-title">Call log</div><div class="page-sub">Every inbound call in your agency — all agents, including missed.</div>`;
+  c.innerHTML = head + skelTable(8);
+  let rows = [];
+  try { rows = (await sb.rpc("tenant_call_log", { p_tenant: activeTenantId() })).data || []; }
+  catch { c.innerHTML = head + `<div class="coming"><div class="badge"><i class="ti ti-lock"></i></div><b>Admins only</b></div>`; return; }
+  if (!rows.length) { c.innerHTML = head + `<div class="coming"><div class="badge"><i class="ti ti-phone-calls"></i></div><b>No calls yet</b><div>Inbound calls to your agency will appear here.</div></div>`; return; }
+  const isConn = r => r.connected || r.status === "connected" || r.status === "completed";
+  const total = rows.length, connected = rows.filter(isConn).length;
+  const missed = rows.filter(r => r.status === "no_agent" || r.status === "missed").length;
+  const spend = rows.reduce((s, r) => s + (r.billable ? +r.price || 0 : 0), 0);
+  const body = rows.map(r => {
+    const st = CALL_STATUS[r.status] || { label: r.status, cls: "grey" };
+    return `<tr>
+      <td>${fmtDT(r.started_at)}</td>
+      <td>${r.agent_name ? esc(r.agent_name) : '<span class="muted2">— no agent</span>'}</td>
+      <td>${esc(r.lead_name || "Unknown caller")}<div class="muted2">${esc(r.caller_number || "")}</div></td>
+      <td>${esc(r.caller_state || "—")}</td>
+      <td><span class="pill ${st.cls}">${st.label}</span></td>
+      <td>${fmtDur(r.talk_sec || r.duration_sec)}</td>
+      <td>${r.billable ? money(r.price) : '<span class="muted2">—</span>'}</td>
+      <td>${r.recording_url ? `<a href="${esc(r.recording_url)}" target="_blank" rel="noopener" class="rec-play" title="Play recording"><i class="ti ti-player-play"></i></a>` : '<span class="muted2">—</span>'}</td>
+      <td style="text-align:right">${r.deal_id ? '<span class="pill green">Sold</span>' : "—"}</td>
+    </tr>`;
+  }).join("");
+  c.innerHTML = head + `
+    <div class="stat-grid" style="margin:6px 0 14px">
+      <div class="stat"><span class="ic ic-blue"><i class="ti ti-phone-incoming"></i></span><div><div class="lab">Total</div><div class="val num">${total}</div></div></div>
+      <div class="stat"><span class="ic ic-green"><i class="ti ti-phone-check"></i></span><div><div class="lab">Connected</div><div class="val num">${connected}</div></div></div>
+      <div class="stat"><span class="ic ic-pink"><i class="ti ti-phone-off"></i></span><div><div class="lab">Missed</div><div class="val num">${missed}</div></div></div>
+      <div class="stat"><span class="ic ic-amber"><i class="ti ti-receipt"></i></span><div><div class="lab">Call spend</div><div class="val num">${money(spend)}</div></div></div>
+    </div>
+    <table class="data-tbl"><thead><tr><th>Time</th><th>Agent</th><th>Caller</th><th>State</th><th>Status</th><th>Talk</th><th>Billable</th><th>Rec</th><th></th></tr></thead><tbody>${body}</tbody></table>`;
+  c.querySelectorAll(".stat .val").forEach(countUp);
 }
 
 // ---- Setup / onboarding checklist (admin console) ----
