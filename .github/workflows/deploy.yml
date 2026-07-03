@@ -10,9 +10,8 @@ permissions:
   pages: write
   id-token: write
 
-# One deploy at a time, but NEVER cancel an in-flight deployment — canceling mid-publish
-# leaves Pages half-deployed and makes the next run fail "Deployment failed, try again later".
-# (This matches GitHub's official Pages workflow.)
+# One deploy at a time; never cancel an in-flight deployment (canceling mid-publish
+# leaves Pages half-deployed and makes the next run fail "Deployment failed, try again later").
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -21,7 +20,6 @@ jobs:
   deploy:
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -32,7 +30,26 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: "."
-      - name: Deploy to GitHub Pages
-        id: deployment
+      # actions/deploy-pages intermittently returns "Deployment failed, try again later"
+      # (a transient GitHub Pages hiccup). Retry up to 3x so one bad roll doesn't fail the run.
+      - name: Deploy (attempt 1)
+        id: dep1
+        uses: actions/deploy-pages@v4
+        timeout-minutes: 10
+        continue-on-error: true
+      - name: Cool off
+        if: steps.dep1.outcome == 'failure'
+        run: sleep 25
+      - name: Deploy (attempt 2)
+        id: dep2
+        if: steps.dep1.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+        timeout-minutes: 10
+        continue-on-error: true
+      - name: Cool off more
+        if: steps.dep1.outcome == 'failure' && steps.dep2.outcome == 'failure'
+        run: sleep 40
+      - name: Deploy (final attempt)
+        if: steps.dep1.outcome == 'failure' && steps.dep2.outcome == 'failure'
         uses: actions/deploy-pages@v4
         timeout-minutes: 10
