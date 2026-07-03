@@ -178,6 +178,7 @@ async function boot() {
 async function exitImpersonation() {
   localStorage.removeItem("arcane_impersonating");
   IMPERSONATING = null;
+  unsubscribeCalls();
   await sb.auth.signOut();
   // back to Arcane HQ where the platform-admin session still lives
   location.href = "https://admin.arcaneleadsolutions.com";
@@ -215,6 +216,7 @@ async function loadMe() {
   }
   renderApp();
   go(defaultRoute());
+  subscribeCalls();   // live inbound-call updates + incoming-call surface
   // returning from Stripe checkout?
   const wp = new URLSearchParams(location.search).get("wallet");
   if (wp) {
@@ -360,7 +362,7 @@ async function finishOnboarding() {
   boot();
 }
 
-async function signOut() { await sb.auth.signOut(); location.reload(); }
+async function signOut() { unsubscribeCalls(); await sb.auth.signOut(); location.reload(); }
 
 // ---- white-label branding (tenant logo + name in the header) ----
 // the tenant currently being viewed/managed (platform admin can switch; everyone else = their own)
@@ -2591,6 +2593,47 @@ async function loadCalls() {
       .order("started_at", { ascending: false }).limit(200)).data || [];
   } catch { CALLS_DATA = []; }
   renderCalls();
+}
+// ---- Realtime: live inbound calls ----
+let CALLS_CHANNEL = null;
+const INCOMING = new Map();            // call id -> banner element
+const CALL_DONE = ["completed", "no_answer", "missed", "no_agent", "failed", "cancelled"];
+const CALL_LIVE = ["routed", "ringing", "connected", "in_progress"];
+function subscribeCalls() {
+  if (!ME?.id) return;
+  if (CALLS_CHANNEL) { try { sb.removeChannel(CALLS_CHANNEL); } catch { } CALLS_CHANNEL = null; }
+  CALLS_CHANNEL = sb.channel("calls-" + ME.id)
+    .on("postgres_changes", { event: "*", schema: "public", table: "calls", filter: `agent_id=eq.${ME.id}` }, onCallEvent)
+    .subscribe();
+}
+function unsubscribeCalls() { if (CALLS_CHANNEL) { try { sb.removeChannel(CALLS_CHANNEL); } catch { } CALLS_CHANNEL = null; } INCOMING.clear(); }
+function onCallEvent(payload) {
+  const row = payload.new || payload.old; if (!row) return;
+  // incoming-call surface (works from any page)
+  if (payload.eventType !== "DELETE" && CALL_LIVE.includes(row.status)) showIncomingCall(row);
+  else if (CALL_DONE.includes(row.status)) dismissIncoming(row.id, true);
+  // live-refresh whichever page is open (re-fetch to pick up the lead join / fresh figures)
+  if (ROUTE === "calls") loadCalls();
+  else if (ROUTE === "dashboard") loadDashboard();
+}
+function showIncomingCall(row) {
+  let host = document.getElementById("incoming-stack");
+  if (!host) { host = document.createElement("div"); host.id = "incoming-stack"; document.body.appendChild(host); }
+  const connected = row.status === "connected" || row.status === "in_progress";
+  const sub = `${row.caller_number || "Unknown number"}${row.caller_state ? " · " + esc(row.caller_state) : ""}`;
+  let el = INCOMING.get(row.id);
+  if (!el) { el = document.createElement("div"); el.className = "incoming-card"; INCOMING.set(row.id, el); host.appendChild(el); }
+  el.classList.toggle("connected", connected);
+  el.innerHTML = `<div class="ic-ring"><i class="ti ti-phone-incoming"></i></div>
+    <div class="ic-body"><div class="ic-t">${connected ? "On call" : "Incoming call"}</div><div class="ic-s">${sub}</div><div class="ic-hint">${connected ? "Connected on your phone" : "Ringing your phone…"}</div></div>
+    <div class="ic-actions"><button class="ic-view" data-cv>View</button><button class="ic-x" data-cx title="Dismiss"><i class="ti ti-x"></i></button></div>`;
+  el.querySelector("[data-cv]").onclick = () => { dismissIncoming(row.id, false); go("calls"); };
+  el.querySelector("[data-cx]").onclick = () => dismissIncoming(row.id, false);
+}
+function dismissIncoming(id, fade) {
+  const el = INCOMING.get(id); if (!el) return;
+  if (fade) { el.classList.add("gone"); setTimeout(() => { el.remove(); INCOMING.delete(id); }, 3500); }
+  else { el.remove(); INCOMING.delete(id); }
 }
 function renderCalls() {
   const c = $("#content");
