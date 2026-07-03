@@ -472,7 +472,7 @@ function go(route) {
   if (route === "calendar") return loadCalendar();
   if (route === "tasks") return loadTasks();
   if (route === "settings") return loadProfile();
-  if (route === "import") { PF_TAB = "admin"; ADMIN_TAB = "import"; return loadProfile(); }
+  if (route === "import") return loadImport();
   if (route === "agencies") return loadAgencies();
   if (route === "agents") return loadAgents();
   if (route === "setup") return loadSetup();
@@ -1189,7 +1189,6 @@ const ADMIN_SUBS = [
   ["tenant",     "Agency",              "ti-building",           () => pfTenant()],
   ["setup",      "Setup",               "ti-rocket",             () => loadSetup()],
   ["agents",     "Agents",              "ti-users",              () => loadAgents()],
-  ["import",     "Import leads",        "ti-upload",             () => loadImport()],
   ["pool",       "Unassigned",          "ti-user-question",      () => loadUnassigned()],
   ["calllog",    "Call log",            "ti-phone-calls",        () => loadAdminCallLog()],
   ["admintiers", "Pricing & tiers",     "ti-adjustments-dollar", () => loadAdminTiers()],
@@ -2776,8 +2775,7 @@ async function applyCallDisposition(callId, disp) {
   renderCalls();
 }
 
-// ---- Import leads (admin, bulk CSV) ----
-const IMPORT_FIELDS = [["first_name", "First name"], ["last_name", "Last name"], ["phone", "Phone"], ["email", "Email"], ["state", "State"], ["dob", "Date of birth"], ["gender", "Gender"], ["source", "Source"]];
+// ---- Import leads (admin, standalone page, bulk CSV) ----
 function parseCSV(text) {
   const rows = []; let row = [], cur = "", q = false;
   for (let i = 0; i < text.length; i++) {
@@ -2792,16 +2790,25 @@ function parseCSV(text) {
   if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
   return rows.filter(r => r.some(x => (x || "").trim() !== ""));
 }
+// resolve a LEAD_TYPE_FIELDS key ("Mortgage Protection") to a catalog lead_type_id
+function resolveLeadTypeId(name) {
+  const n = String(name || "").toLowerCase();
+  const hit = (CATALOG || []).find(t => String(t.name).toLowerCase() === n) || (CATALOG || []).find(t => String(t.name).toLowerCase().includes(n) || n.includes(String(t.name).toLowerCase()));
+  return hit ? hit.id : null;
+}
 let IMPORT = null;
 async function loadImport() {
-  const c = adminHost();
-  c.innerHTML = `<div class="page-title">Import leads</div><div class="page-sub">Upload a CSV to add leads to your agency. Duplicates (by phone or email) are skipped automatically.</div>
-    <div class="pf-card" style="max-width:640px"><div class="pf-card-h2"><b><i class="ti ti-file-upload"></i> Upload CSV</b><span>First row = column headers</span></div>
+  const c = $("#content");
+  if (!isAdminUser()) { c.innerHTML = `<div class="coming"><div class="badge"><i class="ti ti-lock"></i></div><b>Admins only</b><div>Lead import is an admin tool.</div></div>`; return; }
+  if (!CATALOG) { try { CATALOG = (await sb.from("lead_types").select("*, lead_verticals(name)").eq("is_active", true).order("sort_order")).data || []; } catch { CATALOG = []; } }
+  IMPORT = null;
+  c.innerHTML = `<div class="page-title">Import leads</div><div class="page-sub">Bulk-upload a CSV. Duplicates (by phone or email) are skipped, and imported leads are assigned to you.</div>
+    <div class="pf-card" style="max-width:660px"><div class="pf-card-h2"><b><i class="ti ti-file-upload"></i> Upload CSV</b><span>First row = column headers</span></div>
       <div style="padding:16px">
         <input type="file" id="imp-file" accept=".csv,text/csv" hidden>
         <button class="btn-gold" id="imp-pick"><i class="ti ti-upload"></i> Choose CSV file</button>
         <span class="muted2" id="imp-fname" style="margin-left:10px"></span>
-        <div class="muted2" style="margin-top:12px">We can map: name, phone, email, state, date of birth, gender, source. Each row needs at least a phone or email.</div>
+        <div class="muted2" style="margin-top:12px">After uploading, pick your lead type — you can map every field that type sends through integrations. Each row needs at least a phone or email.</div>
       </div>
     </div>
     <div id="imp-config"></div>`;
@@ -2811,46 +2818,60 @@ async function loadImport() {
 function onImportFile(text) {
   const rows = parseCSV(text);
   if (rows.length < 2) { toast("CSV needs a header row plus at least one data row"); return; }
-  const headers = rows[0].map(h => (h || "").trim());
-  const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
-  const ALIASES = { first_name: ["firstname", "first", "fname", "givenname"], last_name: ["lastname", "last", "lname", "surname"], phone: ["phone", "phonenumber", "mobile", "cell", "tel"], email: ["email", "emailaddress"], state: ["state", "st", "region"], dob: ["dob", "dateofbirth", "birthdate", "birthday"], gender: ["gender", "sex"], source: ["source", "leadsource"] };
-  const map = {};
-  IMPORT_FIELDS.forEach(([id]) => { const idx = headers.findIndex(h => norm(h) === id || (ALIASES[id] || []).includes(norm(h))); if (idx >= 0) map[id] = idx; });
-  IMPORT = { headers, data: rows.slice(1), map };
-  renderImportConfig();
+  IMPORT = { headers: rows[0].map(h => (h || "").trim()), data: rows.slice(1), typeName: Object.keys(LEAD_TYPE_FIELDS)[0], map: {} };
+  autoMapImport(); renderImportConfig();
 }
-async function renderImportConfig() {
+function autoMapImport() {
+  const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
+  const ALIAS = { first_name: ["firstname", "first", "fname"], last_name: ["lastname", "last", "lname", "surname"], phone: ["phone", "phonenumber", "mobile", "cell", "tel"], email: ["email", "emailaddress"], state: ["state", "st"], dob: ["dob", "dateofbirth", "birthdate", "birthday"] };
+  const map = {};
+  (LEAD_TYPE_FIELDS[IMPORT.typeName] || []).forEach(([key, label]) => {
+    const targets = new Set([norm(key), norm(label), ...(ALIAS[key] || [])]);
+    const idx = IMPORT.headers.findIndex(h => targets.has(norm(h)));
+    if (idx >= 0) map[key] = idx;
+  });
+  IMPORT.map = map;
+}
+function renderImportConfig() {
   const box = $("#imp-config"); if (!box || !IMPORT) return;
-  let agents = [];
-  try { agents = (await sb.rpc("platform_agents", { p_tenant: activeTenantId() })).data || []; } catch { }
-  if (!agents.length) { try { agents = (await sb.from("agents").select("id,full_name,email").eq("tenant_id", activeTenantId())).data || []; } catch { } }
+  const fields = LEAD_TYPE_FIELDS[IMPORT.typeName] || [];
   const colOpts = sel => `<option value="">— skip —</option>` + IMPORT.headers.map((h, i) => `<option value="${i}" ${sel === i ? "selected" : ""}>${esc(h || ("Column " + (i + 1)))}</option>`).join("");
+  const typeOpts = Object.keys(LEAD_TYPE_FIELDS).map(t => `<option value="${esc(t)}" ${t === IMPORT.typeName ? "selected" : ""}>${esc(t)}</option>`).join("");
+  const mapped = Object.keys(IMPORT.map).length;
+  const noMatch = !resolveLeadTypeId(IMPORT.typeName);
   box.innerHTML = `
-    <div class="pf-card" style="max-width:640px;margin-top:14px"><div class="pf-card-h2"><b><i class="ti ti-columns"></i> Map columns</b><span>${IMPORT.data.length} rows found</span></div>
-      <div class="pf-grid" style="padding:14px 16px">${IMPORT_FIELDS.map(([id, lab]) => `<div class="field"><label>${lab}</label><select class="in imp-map" data-f="${id}">${colOpts(IMPORT.map[id])}</select></div>`).join("")}</div>
+    <div class="pf-card" style="max-width:660px;margin-top:14px"><div class="pf-card-h2"><b><i class="ti ti-category"></i> Lead type</b><span>sets which fields you can map</span></div>
+      <div style="padding:14px 16px"><select class="in" id="imp-type" style="max-width:340px">${typeOpts}</select>${noMatch ? `<span class="muted2" style="margin-left:10px">Not in your catalog — fields still saved to the lead.</span>` : ""}</div>
     </div>
-    <div class="pf-card" style="max-width:860px;margin-top:14px"><div class="pf-card-h2"><b><i class="ti ti-eye"></i> Preview</b><span>first 5 rows</span></div>
-      <div style="overflow:auto;padding:0 2px 6px"><table class="data-tbl"><thead><tr>${IMPORT_FIELDS.map(([, lab]) => `<th>${lab}</th>`).join("")}</tr></thead><tbody id="imp-prev"></tbody></table></div>
+    <div class="pf-card" style="max-width:660px;margin-top:14px"><div class="pf-card-h2"><b><i class="ti ti-columns"></i> Map columns</b><span>${mapped}/${fields.length} mapped · ${IMPORT.data.length} rows</span></div>
+      <div class="pf-grid" style="padding:14px 16px">${fields.map(([key, label]) => `<div class="field"><label>${esc(label)} <code class="ff-field" style="font-size:10px;opacity:.7">${esc(key)}</code></label><select class="in imp-map" data-f="${esc(key)}">${colOpts(IMPORT.map[key])}</select></div>`).join("")}</div>
     </div>
-    <div class="pf-card" style="max-width:640px;margin-top:14px"><div class="pf-card-h2"><b><i class="ti ti-user-check"></i> Assign</b><span>optional</span></div>
-      <div style="padding:14px 16px"><select class="in" id="imp-assign" style="max-width:340px"><option value="">Leave unassigned (pool)</option>${agents.map(a => `<option value="${a.agent_id || a.id}">${esc(a.full_name || a.email)}</option>`).join("")}</select>
-        <div class="muted2" style="margin-top:8px">Assigned leads go straight to that agent. Unassigned leads wait in the pool (Settings → Admin → Unassigned).</div></div>
+    <div class="pf-card" style="max-width:900px;margin-top:14px"><div class="pf-card-h2"><b><i class="ti ti-eye"></i> Preview</b><span>first 5 rows · mapped fields</span></div>
+      <div style="overflow:auto;padding:0 2px 6px" id="imp-prev-wrap"></div>
     </div>
-    <div style="max-width:640px;margin-top:14px;display:flex;gap:12px;align-items:center"><button class="btn-gold" id="imp-go"><i class="ti ti-database-import"></i> Import ${IMPORT.data.length} leads</button><span class="muted2" id="imp-status"></span></div>`;
-  const renderPrev = () => { $("#imp-prev").innerHTML = IMPORT.data.slice(0, 5).map(r => `<tr>${IMPORT_FIELDS.map(([id]) => { const idx = IMPORT.map[id]; return `<td>${idx != null && idx !== "" ? esc(r[idx] || "") : '<span class="muted2">—</span>'}</td>`; }).join("")}</tr>`).join(""); };
-  renderPrev();
-  box.querySelectorAll(".imp-map").forEach(s => s.onchange = () => { const v = s.value; if (v === "") delete IMPORT.map[s.dataset.f]; else IMPORT.map[s.dataset.f] = +v; renderPrev(); });
+    <div style="max-width:660px;margin-top:14px;display:flex;gap:12px;align-items:center"><button class="btn-gold" id="imp-go"><i class="ti ti-database-import"></i> Import ${IMPORT.data.length} leads</button><span class="muted2" id="imp-status"></span></div>`;
+  renderImportPreview();
+  $("#imp-type").onchange = () => { IMPORT.typeName = $("#imp-type").value; autoMapImport(); renderImportConfig(); };
+  box.querySelectorAll(".imp-map").forEach(s => s.onchange = () => { const v = s.value; if (v === "") delete IMPORT.map[s.dataset.f]; else IMPORT.map[s.dataset.f] = +v; renderImportPreview(); });
   $("#imp-go").onclick = runImport;
+}
+function renderImportPreview() {
+  const wrap = $("#imp-prev-wrap"); if (!wrap) return;
+  const keys = Object.keys(IMPORT.map);
+  if (!keys.length) { wrap.innerHTML = `<div class="muted2" style="padding:12px">Map at least one column to preview.</div>`; return; }
+  const labelFor = k => (LEAD_TYPE_FIELDS[IMPORT.typeName].find(f => f[0] === k) || [k, k])[1];
+  wrap.innerHTML = `<table class="data-tbl"><thead><tr>${keys.map(k => `<th>${esc(labelFor(k))}</th>`).join("")}</tr></thead><tbody>${IMPORT.data.slice(0, 5).map(r => `<tr>${keys.map(k => `<td>${esc(r[IMPORT.map[k]] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
 }
 async function runImport() {
   if (IMPORT.map.phone == null && IMPORT.map.email == null) { toast("Map at least a phone or email column"); return; }
   const btn = $("#imp-go"), st = $("#imp-status");
-  const rows = IMPORT.data.map(r => { const o = {}; IMPORT_FIELDS.forEach(([id]) => { const idx = IMPORT.map[id]; if (idx != null && idx !== "") o[id] = (r[idx] || "").trim(); }); return o; }).filter(o => o.phone || o.email);
+  const keys = Object.keys(IMPORT.map);
+  const rows = IMPORT.data.map(r => { const o = {}; keys.forEach(k => { const v = (r[IMPORT.map[k]] || "").trim(); if (v) o[k] = v; }); return o; }).filter(o => o.phone || o.email);
   btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Importing…`;
-  const { data, error } = await sb.rpc("import_leads", { p_rows: rows, p_assign_to: $("#imp-assign").value || null });
+  const { data, error } = await sb.rpc("import_leads", { p_rows: rows, p_lead_type: resolveLeadTypeId(IMPORT.typeName) });
   btn.disabled = false; btn.innerHTML = `<i class="ti ti-database-import"></i> Import ${IMPORT.data.length} leads`;
   if (error) { st.style.color = "var(--red)"; st.textContent = error.message; return; }
-  st.style.color = "var(--green)"; st.textContent = `Created ${data.created} · ${data.duplicates} duplicate${data.duplicates === 1 ? "" : "s"} skipped${data.assigned ? ` · ${data.assigned} assigned` : ""}${data.errors ? ` · ${data.errors} error${data.errors === 1 ? "" : "s"}` : ""}`;
+  st.style.color = "var(--green)"; st.textContent = `Created ${data.created} · ${data.duplicates} duplicate${data.duplicates === 1 ? "" : "s"} skipped${data.errors ? ` · ${data.errors} error${data.errors === 1 ? "" : "s"}` : ""} · assigned to you`;
   toast(`Imported ${data.created} leads`);
 }
 
