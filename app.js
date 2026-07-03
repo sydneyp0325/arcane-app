@@ -60,10 +60,11 @@ function skelCards(n = 5) {
 // ---- notification center ----
 function timeAgo(d) { const s = (Date.now() - d.getTime()) / 1000; if (s < 60) return "just now"; if (s < 3600) return Math.floor(s / 60) + "m ago"; if (s < 86400) return Math.floor(s / 3600) + "h ago"; return Math.floor(s / 86400) + "d ago"; }
 async function checkNotifDot() {
-  try { const since = new Date(Date.now() - 86400000).toISOString();
-    const { count } = await sb.from("assignments").select("id", { count: "exact", head: true }).eq("agent_id", ME.id).gte("assigned_at", since);
-    const dot = document.querySelector("#notif-dot"); if (dot && count > 0) dot.style.display = "block";
-  } catch { }
+  let show = false;
+  const today = new Date().toISOString().slice(0, 10);
+  try { const { count } = await sb.from("tasks").select("id", { count: "exact", head: true }).eq("agent_id", ME.id).eq("status", "open").not("due_at", "is", null).lte("due_at", today); if (count > 0) show = true; } catch { }
+  if (!show) { try { const since = new Date(Date.now() - 86400000).toISOString(); const { count } = await sb.from("assignments").select("id", { count: "exact", head: true }).eq("agent_id", ME.id).gte("assigned_at", since); if (count > 0) show = true; } catch { } }
+  const dot = document.querySelector("#notif-dot"); if (dot) dot.style.display = show ? "block" : "none";
 }
 async function toggleNotifications() {
   const ex = document.querySelector("#notif-pop"); if (ex) { ex.remove(); return; }
@@ -76,12 +77,16 @@ async function toggleNotifications() {
   const dot = document.querySelector("#notif-dot"); if (dot) dot.style.display = "none";
   const items = [];
   const nm = o => `${o?.first_name || ""} ${o?.last_name || ""}`.trim() || "Lead";
+  const today = new Date().toISOString().slice(0, 10);
+  // task-due reminders (open tasks due today or overdue)
+  try { (await sb.from("tasks").select("id,title,due_at,priority").eq("agent_id", ME.id).eq("status", "open").not("due_at", "is", null).lte("due_at", today).order("due_at", { ascending: true }).limit(10)).data?.forEach(t => { const overdue = t.due_at < today; items.push({ t: new Date(t.due_at + "T09:00:00"), ic: "ti-checkbox", cl: overdue ? "red" : "gold", txt: `Task ${overdue ? "overdue" : "due"} — ${t.title}`, sub: overdue ? "was due " + new Date(t.due_at).toLocaleDateString() : "due today", route: "tasks" }); }); } catch { }
   try { (await sb.from("deals").select("client_name,annual_premium,sale_date,created_at").eq("agent_id", ME.id).order("created_at", { ascending: false }).limit(6)).data?.forEach(d => items.push({ t: new Date(d.created_at || d.sale_date), ic: "ti-rosette-discount-check", cl: "green", txt: `Deal logged — ${money(d.annual_premium)} AP`, sub: d.client_name || "" })); } catch { }
   try { (await sb.from("lead_appointments").select("starts_at,created_at,leads(first_name,last_name)").eq("agent_id", ME.id).order("created_at", { ascending: false }).limit(6)).data?.forEach(a => items.push({ t: new Date(a.created_at || a.starts_at), ic: "ti-calendar-event", cl: "blue", txt: `Appointment — ${nm(a.leads)}`, sub: new Date(a.starts_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) })); } catch { }
   try { (await sb.from("assignments").select("assigned_at,leads(first_name,last_name,state)").eq("agent_id", ME.id).order("assigned_at", { ascending: false }).limit(8)).data?.forEach(a => items.push({ t: new Date(a.assigned_at), ic: "ti-user-plus", cl: "gold", txt: `New lead — ${nm(a.leads)}`, sub: a.leads?.state || "" })); } catch { }
   items.sort((a, b) => b.t - a.t);
   const body = pop.querySelector(".notif-body");
-  body.innerHTML = items.length ? items.slice(0, 14).map(i => `<div class="notif-item"><span class="notif-ic ${i.cl}"><i class="ti ${i.ic}"></i></span><div style="min-width:0"><div class="notif-txt">${esc(i.txt)}</div><div class="notif-sub">${[esc(i.sub), timeAgo(i.t)].filter(Boolean).join(" · ")}</div></div></div>`).join("") : `<div class="notif-empty">Nothing yet.</div>`;
+  body.innerHTML = items.length ? items.slice(0, 14).map(i => `<div class="notif-item${i.route ? " clickable" : ""}"${i.route ? ` data-nroute="${i.route}"` : ""}><span class="notif-ic ${i.cl}"><i class="ti ${i.ic}"></i></span><div style="min-width:0"><div class="notif-txt">${esc(i.txt)}</div><div class="notif-sub">${[esc(i.sub), timeAgo(i.t)].filter(Boolean).join(" · ")}</div></div></div>`).join("") : `<div class="notif-empty">Nothing yet.</div>`;
+  body.querySelectorAll("[data-nroute]").forEach(el => el.addEventListener("click", () => { pop.remove(); go(el.dataset.nroute); }));
 }
 
 // ---- toast notifications ----
