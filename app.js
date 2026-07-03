@@ -1583,6 +1583,8 @@ async function loadSetup() {
   const FN = "https://cdctxwbkpjdkytwstvoq.supabase.co/functions/v1";
   const routeUrl = `${FN}/trackdrive-inbound-route?tenant=${t.slug || ""}`;
   const postbackUrl = `${FN}/trackdrive-inbound-postback?tenant=${t.slug || ""}`;
+  const intakeUrl = `${FN}/intake-lead`;
+  let intakeSecret = null; try { intakeSecret = (await sb.rpc("get_intake_secret", { p_tenant: tid })).data; } catch { }
   const inviteCode = t.invite_code || "";
   const inviteUrl = inviteCode ? `${location.origin}${location.pathname}?invite=${inviteCode}` : `${location.origin}${location.pathname}`;
   const brandOk = !!(t.logo_url && t.brand_name);
@@ -1608,6 +1610,12 @@ async function loadSetup() {
           <div class="url-row"><span class="url-lab">Call end</span><code>${esc(postbackUrl)}</code><button class="btn-ghost sm" data-copy="${esc(postbackUrl)}"><i class="ti ti-copy"></i></button></div>
           <div class="pf-grid" style="padding:8px 0 0"><div class="field"><label>Trackdrive account label</label><input class="in" id="setup-tdref" value="${esc(t.trackdrive_ref || "")}" placeholder="e.g. 1010-td"></div><div class="field" style="align-self:flex-end"><button class="btn-gold" id="setup-tdsave"><i class="ti ti-check"></i> Save &amp; mark configured</button></div></div>
         </div></div>
+      <div class="pf-card">${hdr("ti-webhook", "Lead intake webhook", false).replace('class="pill yellow">To do', 'class="pill grey">Anytime')}
+        <div class="setup-b">
+          <div class="muted2">Point your GHL / form here to feed generated leads into your pool. Send the secret in the <code>x-intake-secret</code> header — it routes leads to your active orders by type + state. Keep it private.</div>
+          <div class="url-row"><span class="url-lab">Endpoint</span><code>${esc(intakeUrl)}</code><button class="btn-ghost sm" data-copy="${esc(intakeUrl)}"><i class="ti ti-copy"></i></button></div>
+          <div class="url-row"><span class="url-lab">Secret</span><code id="setup-intake-secret">${esc(intakeSecret || "—")}</code><button class="btn-ghost sm" id="setup-intake-copy" title="Copy"><i class="ti ti-copy"></i></button><button class="btn-ghost sm" id="setup-intake-regen" title="Regenerate"><i class="ti ti-refresh"></i></button></div>
+        </div></div>
       <div class="pf-card">${hdr("ti-user-plus", "Invite agents", false).replace('class="pill yellow">To do', 'class="pill grey">Anytime')}
         <div class="setup-b">
           <div class="muted2" style="margin-bottom:6px">Share this link — anyone who signs up through it joins <b>${esc(t.brand_name || "your agency")}</b>. The code is what routes them to you, so keep it private.</div>
@@ -1621,6 +1629,12 @@ async function loadSetup() {
   $("#setup-regen")?.addEventListener("click", async () => {
     if (!confirm("Regenerate the invite code? The old link will stop working.")) return;
     try { const code = (await sb.rpc("regenerate_invite_code")).data; if (TENANT && TENANT.id === tid) TENANT.invite_code = code; toast("New invite code generated"); loadSetup(); }
+    catch (e) { toast(e.message || "Couldn't regenerate"); }
+  });
+  $("#setup-intake-copy")?.addEventListener("click", () => { const v = $("#setup-intake-secret")?.textContent; if (v && v !== "—") { navigator.clipboard?.writeText(v); toast("Secret copied"); } });
+  $("#setup-intake-regen")?.addEventListener("click", async () => {
+    if (!confirm("Regenerate the intake secret? Your GHL/form webhook will stop working until you update it with the new secret.")) return;
+    try { const sec = (await sb.rpc("regenerate_intake_secret", { p_tenant: tid })).data; const el = $("#setup-intake-secret"); if (el) el.textContent = sec; toast("New intake secret generated"); }
     catch (e) { toast(e.message || "Couldn't regenerate"); }
   });
   $("#setup-tdsave")?.addEventListener("click", async e => {
