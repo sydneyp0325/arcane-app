@@ -157,10 +157,30 @@ function navFor(mode) {
 }
 
 // ---------------------------------------------------------------- boot (Supabase Auth)
+let IMPERSONATING = null;   // { name } when a platform admin is logged in AS another agent
 async function boot() {
+  // impersonation deep-link from Arcane HQ: ?impersonate=<token_hash>&as=<name>
+  const qp = new URLSearchParams(location.search);
+  const impTok = qp.get("impersonate");
+  if (impTok) {
+    const asName = qp.get("as") || "agent";
+    history.replaceState({}, "", location.pathname);
+    const { error } = await sb.auth.verifyOtp({ token_hash: impTok, type: "magiclink" });
+    if (error) { alert("Couldn't start the support session: " + error.message); return showLogin(); }
+    localStorage.setItem("arcane_impersonating", asName);
+    IMPERSONATING = { name: asName };
+  }
+  if (localStorage.getItem("arcane_impersonating")) IMPERSONATING = { name: localStorage.getItem("arcane_impersonating") };
   const { data: { session } } = await sb.auth.getSession();
-  if (!session) { await loadBrandPreview(); return showLogin(); }
+  if (!session) { IMPERSONATING = null; localStorage.removeItem("arcane_impersonating"); await loadBrandPreview(); return showLogin(); }
   await loadMe();
+}
+async function exitImpersonation() {
+  localStorage.removeItem("arcane_impersonating");
+  IMPERSONATING = null;
+  await sb.auth.signOut();
+  // back to Arcane HQ where the platform-admin session still lives
+  location.href = "https://admin.arcaneleadsolutions.com";
 }
 
 async function loadMe() {
@@ -192,12 +212,6 @@ async function loadMe() {
   if (_onb && ME?.id) {
     try { const o = JSON.parse(_onb); const p = {}; if (o.npn) p.npn = o.npn; if (o.states?.length) p.licensed_states = o.states; if (o.phone) { p.public_phone = o.phone; p.forward_number = o.phone; } if (Object.keys(p).length) await sb.from("agents").update(p).eq("id", ME.id); } catch { }
     localStorage.removeItem("arcane_onb");
-  }
-  // deep-link from Arcane HQ: ?mode=dev&manage=<tenant_id> drops a platform admin straight into that tenant
-  const manageId = new URLSearchParams(location.search).get("manage");
-  if (manageId && ME?.is_platform_admin && appMode() === "dev") {
-    history.replaceState({}, "", location.pathname + "?mode=dev");
-    return enterAgency(manageId);
   }
   renderApp();
   go(defaultRoute());
@@ -377,8 +391,10 @@ async function exitAgency() {
 
 // ---------------------------------------------------------------- shell
 function renderApp() {
+  const impBanner = IMPERSONATING ? `<div class="imp-bar"><i class="ti ti-user-shield"></i> You're helping <b>${esc(IMPERSONATING.name)}</b> — you're acting as their account. <button class="imp-exit" id="imp-exit"><i class="ti ti-logout"></i> Exit support session</button></div>` : "";
   $("#root").innerHTML = `
-    <div class="app">
+    ${impBanner}
+    <div class="app${IMPERSONATING ? " has-imp" : ""}">
       <aside class="side">
         <div class="side-scroll">
           <div class="brand">${brandHTML()}</div>
@@ -420,6 +436,7 @@ function renderApp() {
     </div>`;
   document.querySelectorAll("[data-route]").forEach(el => el.addEventListener("click", () => go(el.dataset.route)));
   $("#signout").addEventListener("click", signOut);
+  $("#imp-exit")?.addEventListener("click", exitImpersonation);
   $("#av-check")?.addEventListener("change", toggleAvailability);
   $("#dev-back")?.addEventListener("click", exitAgency);
   $("#cart-btn").addEventListener("click", () => go("cart"));
