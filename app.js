@@ -773,8 +773,14 @@ async function loadOrder() {
 
 // Switch the active lead type: reload that type's realtime quality tiers, keep the rest of the order state, re-render.
 async function setOrderType(ltId) {
-  const lt = (CATALOG || []).find(t => t.id === ltId) || ORDER.lt;
   $("#content").querySelector(".rt-typesel")?.classList.remove("open");
+  if (String(ltId).startsWith("coming:")) {
+    ORDER.lt = { id: ltId, name: String(ltId).slice(7), coming: true };
+    ORDER.rtTiers = []; ORDER.sel = 0;
+    renderOrder();
+    return;
+  }
+  const lt = (CATALOG || []).find(t => t.id === ltId) || ORDER.lt;
   // the 3 realtime QUALITY tiers (standard / blended / premium) are the purchasable options
   let rtTiers = [];
   try { rtTiers = (await sb.from("lead_tiers").select("id,name,price,quality").eq("tenant_id", activeTenantId()).eq("lead_type_id", lt.id).eq("channel", "realtime")).data || []; } catch { }
@@ -797,6 +803,52 @@ const RT_FEAT = {
   premium: ["Complete demographics", "Landing-page generated", "Best conversion rates"],
 };
 const RT_PILL = { standard: `<span class="qpill lowest">LOWEST COST</span>`, premium: `<span class="qpill highest">HIGHEST QUALITY</span>` };
+
+// Per-lead-type presentation for the realtime ordering page (description, tags, grouped Standard/Premium field sections).
+// Keyed by lowercased lead-type name. Underlying field DATA for import/intake stays in lead_type_fields (HQ catalog).
+const LT_DISPLAY = {
+  "mortgage protection": {
+    desc: "For homeowners needing family protection. Targeted toward ages 30-65+ with term and IUL product focus and family protection messaging.",
+    tags: [{ t: "Homeowner Targeting", c: "green" }, { t: "Family Protection", c: "red" }, { t: "TCPA Compliant", c: "red" }],
+    std: [
+      { g: "Contact Info", f: ["First Name", "Last Name", "Phone Number", "Email Address", "State"] },
+      { g: "Mortgage Details", f: ["Mortgage Balance", "Mortgage Payment"] },
+      { g: "Beneficiary Info", f: ["Beneficiary Name", "Beneficiary Relationship"] },
+      { g: "Health Info", f: ["Heart Attack", "Stroke", "Cancer", "Diabetes History"] },
+    ],
+    prem: [{ g: "All Standard Fields +", f: ["Date Of Birth", "Age", "IP Address", "Trusted Form URL"] }],
+  },
+  "final expense": {
+    desc: "Perfect for agents targeting ages 50-65+ seeking final expense coverage. High-intent prospects actively shopping for life insurance.",
+    tags: [{ t: "Filled in 3 Days", c: "gold" }, { t: "Real-Time", c: "red" }, { t: "TCPA Compliant", c: "red" }],
+    std: [
+      { g: "Contact Info", f: ["First Name", "Last Name", "Phone Number", "Email Address", "State"] },
+      { g: "FEX Specific Info", f: ["Coverage Amount"] },
+      { g: "Addl Info", f: ["Beneficiary Name or Age"] },
+    ],
+    prem: [
+      { g: "All Standard Fields +", f: ["Date of Birth", "Age", "Gender", "Current Life Insurance", "Favorite Hobby", "Beneficiary Relationship"] },
+      { g: "Health Info", f: ["Heart Attack", "Stroke", "Cancer", "Diabetes History"] },
+      { g: "Additional Info", f: ["Platform", "IP Address", "TrustedForm Proof"] },
+    ],
+  },
+  "veteran": {
+    desc: "Specialized campaigns for military veterans. Targeted toward ages 25+ with VA benefits focus and honor service messaging.",
+    tags: [{ t: "Military Targeting", c: "purple" }, { t: "VA Benefits Focus", c: "red" }, { t: "TCPA Compliant", c: "red" }],
+    std: [
+      { g: "Contact Info", f: ["First Name", "Last Name", "Phone Number", "Email Address", "State"] },
+      { g: "Military Info", f: ["Military Status", "Branch of Service"] },
+      { g: "Additional Info", f: ["Coverage needed"] },
+    ],
+    prem: [{ g: "All Standard Fields +", f: ["Date Of Birth", "Age", "Marital Status", "Best Time to Contact", "IP Address", "Trusted Form URL"] }],
+  },
+};
+// Lead types we sell but aren't generating yet — shown in the picker as "Coming Soon", ready to flip live.
+const LT_COMING = ["Annuities", "SPL"];
+const ltDisp = name => LT_DISPLAY[String(name || "").trim().toLowerCase()] || null;
+const rtName = s => String(s || "").replace(/^Real-?Time\s*/i, "").trim();
+const fieldsTitle = () => `${rtName(curTier().name) || "Lead"} Lead Fields`;
+const fieldGroupsHTML = groups => groups.map(g => `<div class="rt-fg"><div class="lbl">${esc(g.g.endsWith("+") ? g.g : g.g + ":")}</div><ul>${g.f.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>`).join("");
 function renderOrder() {
   const c = $("#content"), lt = ORDER.lt;
   const fq = LEAD_TYPE_FIELDS_Q[lt.name] || [];
@@ -807,27 +859,47 @@ function renderOrder() {
     const inner = `<div class="nm">${esc((t.name || q).replace(/^Real-?Time\s*/i, ""))}</div><div class="pr">${money(Number(t.price) || 0)}</div><div class="per">per lead</div><ul class="rt-feat">${(RT_FEAT[q] || []).map(f => `<li><i class="ti ti-check"></i>${esc(f)}</li>`).join("")}</ul>`;
     return `<div class="rt-tier ${pop ? "pop" : ""} ${i === ORDER.sel ? "on" : ""}" data-sel="${i}">${pop ? `<div class="ribbon">MOST POPULAR</div><div class="inner">${inner}</div>` : `${RT_PILL[q] || ""}${inner}`}</div>`;
   };
-  const types = (CATALOG || []).filter(t => t && t.name);
-  c.innerHTML = `<div class="rt-order">
-    <header class="rt-head">
-      <div class="rt-head-t"><h1>High-Converting ${esc(lt.name)} Leads</h1><span class="accent">That Actually Close!</span></div>
-      ${types.length > 1 ? `<div class="rt-typesel" id="rt-typesel">
+  const realTypes = (CATALOG || []).filter(t => t && t.name);
+  const pickTypes = [...realTypes, ...LT_COMING.map(n => ({ id: "coming:" + n, name: n, coming: true }))];
+  const picker = pickTypes.length > 1 ? `<div class="rt-typesel" id="rt-typesel">
         <button class="rt-typebtn" id="rt-typebtn"><i class="ti ti-category-2"></i><span>${esc(lt.name)}</span><i class="ti ti-chevron-down chev"></i></button>
-        <div class="rt-typemenu">${types.map(t => `<button class="rt-typeopt ${t.id === lt.id ? "on" : ""}" data-lt="${t.id}"><i class="ti ti-${t.id === lt.id ? "check" : "point"}"></i>${esc(t.name)}</button>`).join("")}</div>
-      </div>` : ""}
-    </header>
+        <div class="rt-typemenu">${pickTypes.map(t => `<button class="rt-typeopt ${t.id === lt.id ? "on" : ""}" data-lt="${t.id}"><i class="ti ti-${t.id === lt.id ? "check" : t.coming ? "clock" : "point"}"></i>${esc(t.name)}${t.coming ? `<span class="rt-soon">Soon</span>` : ""}</button>`).join("")}</div>
+      </div>` : "";
+  const header = `<header class="rt-head">
+      <div class="rt-head-t"><h1>High-Converting ${esc(lt.name)} Leads</h1><span class="accent">That Actually Close!</span></div>
+      ${picker}
+    </header>`;
+  // Coming-soon lead types: configured & ready, just not generating yet.
+  if (lt.coming) {
+    c.innerHTML = `<div class="rt-order">${header}
+      <div class="rt-soon-wrap"><div class="rt-soon-card">
+        <div class="rt-soon-ic"><i class="ti ti-clock-hour-4"></i></div>
+        <h2>${esc(lt.name)} Leads — Coming Soon</h2>
+        <p>We're not generating <b>${esc(lt.name)}</b> leads yet. This lead type is configured and ready to go live the moment we start generating them.</p>
+        <button class="rt-soon-btn" id="rt-soon-notify"><i class="ti ti-bell"></i> Notify me when available</button>
+      </div></div></div>`;
+    wireOrder(c);
+    return;
+  }
+  const disp = ltDisp(lt.name);
+  const desc = disp?.desc || `Real-time ${lt.name} leads delivered to your CRM the moment they opt in — exclusive to you.`;
+  const tags = disp?.tags || [{ t: "Real-Time", c: "green" }, { t: "Exclusive", c: "gold" }, { t: "TCPA Compliant", c: "blue" }];
+  const stdCol = disp ? fieldGroupsHTML(disp.std) : `<div class="rt-fg"><ul>${(stdF.length ? stdF : [["", "—"]]).map(f => `<li>${esc(f[1])}</li>`).join("")}</ul></div>`;
+  const premCol = disp ? fieldGroupsHTML(disp.prem) : `<p class="rt-plus">All Standard Fields +</p><div class="rt-fg"><ul>${(premF.length ? premF : [["", "—"]]).map(f => `<li>${esc(f[1])}</li>`).join("")}</ul></div>`;
+  c.innerHTML = `<div class="rt-order">
+    ${header}
     <div class="rt-grid">
       <div class="rt-col">
         <section class="rt-card rt-prod"><div class="ch"><i class="ti ti-users"></i> ${esc(lt.name)} Leads</div>
           <div class="cb"><div class="rt-logo"><img src="logo.svg?v=1" alt="Arcane"></div>
             <h3>${esc(lt.name)}</h3>
-            <p class="desc">Real-time ${esc(lt.name)} leads delivered to your CRM the moment they opt in — exclusive to you.</p>
-            <div class="rt-tags"><span class="rt-tag green">Real-Time</span><span class="rt-tag gold">Exclusive</span><span class="rt-tag blue">TCPA Compliant</span></div></div></section>
+            <p class="desc">${esc(desc)}</p>
+            <div class="rt-tags">${tags.map(x => `<span class="rt-tag ${x.c}">${esc(x.t)}</span>`).join("")}</div></div></section>
         <section class="rt-card rt-fields"><div class="ch"><i class="ti ti-list"></i> Lead Fields</div>
-          <div class="cb"><h4>${esc((curTier().name || "Lead"))} Fields</h4>
+          <div class="cb"><h4>${esc(fieldsTitle())}</h4>
             <div class="rt-fcols">
-              <div><h5>Standard Lead Fields</h5><div class="rt-fg"><ul>${(stdF.length ? stdF : [["", "—"]]).map(f => `<li>${esc(f[1])}</li>`).join("")}</ul></div><p class="rt-hint">Generated primarily through lead forms</p></div>
-              <div><h5>Premium Lead Fields</h5><p class="rt-plus">All Standard Fields +</p><div class="rt-fg"><ul>${(premF.length ? premF : [["", "—"]]).map(f => `<li>${esc(f[1])}</li>`).join("")}</ul></div><p class="rt-hint">Generated on landing pages / websites</p></div>
+              <div><h5>Standard Lead Fields</h5>${stdCol}<p class="rt-hint">Generated primarily through lead forms</p></div>
+              <div><h5>Premium Lead Fields</h5>${premCol}<p class="rt-hint">All leads generated on landing pages / websites</p></div>
             </div></div></section>
       </div>
       <div class="rt-col">
@@ -898,10 +970,12 @@ function wireOrder(c) {
     window._rtTypeClose = e => { if (!e.target.closest("#rt-typesel")) c.querySelector("#rt-typesel")?.classList.remove("open"); };
     document.addEventListener("click", window._rtTypeClose);
   }
+  c.querySelector("#rt-soon-notify")?.addEventListener("click", e => { e.target.closest("button").innerHTML = `<i class="ti ti-check"></i> We'll let you know`; e.target.closest("button").disabled = true; });
+  if (ORDER.lt?.coming) return;
   c.querySelectorAll(".rt-tier[data-sel]").forEach(el => el.addEventListener("click", () => {
     ORDER.sel = +el.dataset.sel;
     c.querySelectorAll(".rt-tier").forEach((t, i) => t.classList.toggle("on", i === ORDER.sel));
-    const h4 = c.querySelector(".rt-fields h4"); if (h4) h4.textContent = (curTier().name || "Lead") + " Fields";
+    const h4 = c.querySelector(".rt-fields h4"); if (h4) h4.textContent = fieldsTitle();
     rtTotals();
   }));
   c.querySelectorAll(".rt-card.coll > .ch").forEach(h => h.addEventListener("click", () => h.parentElement.classList.toggle("open")));

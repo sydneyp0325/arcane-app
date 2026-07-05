@@ -645,6 +645,19 @@ tr.task-done td:nth-child(3){text-decoration:line-through}
 .rt-tag.green{color:var(--rt-green);background:rgba(99,195,154,.1);border-color:rgba(99,195,154,.28)}
 .rt-tag.gold{color:var(--rt-gold);background:rgba(219,179,90,.1);border-color:rgba(219,179,90,.28)}
 .rt-tag.blue{color:var(--rt-blue);background:rgba(111,159,216,.1);border-color:rgba(111,159,216,.28)}
+.rt-tag.red{color:var(--rt-red);background:rgba(217,119,107,.1);border-color:rgba(217,119,107,.3)}
+.rt-tag.purple{color:var(--rt-purple);background:rgba(147,132,214,.12);border-color:rgba(147,132,214,.3)}
+.rt-soon{margin-left:auto;font-size:9.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--rt-gold);background:rgba(219,179,90,.12);border:1px solid rgba(219,179,90,.3);padding:2px 7px;border-radius:100px}
+.rt-typeopt.on .rt-soon{color:var(--rt-gold)}
+.rt-soon-wrap{display:grid;place-items:center;padding:40px 0;max-width:1160px;margin:0 auto}
+.rt-soon-card{text-align:center;max-width:460px;background:linear-gradient(180deg,var(--rt-card),var(--rt-card2));border:1px solid var(--rt-line2);border-radius:18px;padding:44px 36px}
+.rt-soon-ic{width:64px;height:64px;margin:0 auto 20px;display:grid;place-items:center;border-radius:16px;background:radial-gradient(120% 120% at 50% 0%,rgba(219,179,90,.14),transparent 60%),var(--rt-card2);border:1px solid var(--rt-line2)}
+.rt-soon-ic .ti{font-size:30px;color:var(--rt-gold)}
+.rt-soon-card h2{font-family:'Fraunces',serif;font-weight:600;font-size:22px;color:var(--rt-tx);margin-bottom:12px}
+.rt-soon-card p{font-size:13px;line-height:1.65;color:var(--rt-tx2);margin-bottom:22px}
+.rt-soon-btn{display:inline-flex;align-items:center;gap:8px;background:var(--rt-goldg);color:var(--rt-ink);font-weight:700;font-size:13px;border:0;padding:11px 20px;border-radius:11px;cursor:pointer;transition:filter .15s}
+.rt-soon-btn:hover{filter:brightness(1.05)}
+.rt-soon-btn:disabled{background:var(--rt-card2);color:var(--rt-green);border:1px solid var(--rt-line2);cursor:default;filter:none}
 .rt-fields h4{text-align:center;font-size:13.5px;font-weight:700;margin-bottom:16px;color:var(--rt-tx)}
 .rt-fcols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
 .rt-fcols h5{font-size:12.5px;font-weight:700;color:var(--rt-gold);margin-bottom:10px}
