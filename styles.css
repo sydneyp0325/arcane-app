@@ -645,7 +645,9 @@ tr.task-done td:nth-child(3){text-decoration:line-through}
 .rt-tier .qpill{display:inline-block;font-size:9px;font-weight:800;letter-spacing:.08em;padding:3px 9px;border-radius:100px;margin-bottom:10px}
 .rt-tier .qpill.lowest{color:#fff;background:var(--rt-purple)}
 .rt-tier .qpill.highest{color:var(--rt-ink);background:var(--rt-green)}
-.rt-tier.pop .inner{margin-top:12px}
+.rt-tier .qpill{min-height:15px}
+.rt-tier.pop .inner{margin-top:33px}
+.rt-tier:not(.pop) .rt-feat{margin-top:0}
 .rt-tier .nm{font-family:'Fraunces',serif;font-weight:600;font-size:17px;margin-bottom:5px;color:var(--rt-tx)}
 .rt-tier .pr{font-size:23px;font-weight:800;letter-spacing:-.02em;color:var(--rt-gold);font-variant-numeric:tabular-nums}
 .rt-tier .per{font-size:10.5px;color:var(--rt-tx3);margin-bottom:12px}

@@ -746,7 +746,7 @@ function toggleDashFilter() {
 // ---------------------------------------------------------------- order funnel
 const US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC"];
 const DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-const MIN_QTY = 20;
+const MIN_QTY = 5;    // floor + step size (quantity moves in increments of 5, no order minimum)
 let CATALOG = null;
 const CART = [];
 let ORDER = null;
@@ -770,7 +770,7 @@ async function loadOrder() {
   ORDER = {
     lt, rtTiers, sel: Math.max(0, rtTiers.findIndex(t => t.quality === "blended")),
     states: new Set(licensed), days: new Set(["Mon", "Tue", "Wed", "Thu", "Fri"]),
-    maxPerDay: "", qty: MIN_QTY, sub: false, sheets,
+    maxPerDay: "", qty: 25, sub: false, sheets,
     notif: { agentEmail: true, agentSms: true, agentApp: true, pdf: false, leadEmail: true, leadSms: true },
     delivery: { ghl: !!ME.ghl_api_key, webhook: "", sheet_id: "" },
   };
@@ -855,7 +855,7 @@ function renderOrder() {
           </div></section>
         <section class="rt-card rt-total"><div class="ch"><i class="ti ti-shopping-cart"></i> Your Order Total</div>
           <div class="cb"><p class="rt-lab">Lead Quantity</p>
-            <div class="rt-qrow"><div class="rt-step"><button data-qty="-1">–</button><input id="rt-qty" value="${ORDER.qty}"><button data-qty="1">+</button></div><span class="rt-qmin">${MIN_QTY} Lead Minimum</span></div>
+            <div class="rt-qrow"><div class="rt-step"><button data-qty="-5">–</button><input id="rt-qty" value="${ORDER.qty}"><button data-qty="5">+</button></div><span class="rt-qmin">Increases by 5</span></div>
             <div class="rt-amt" id="rt-amt">${money(ordTotal())} <small>(${money(ltPrice())} per lead)</small></div></div></section>
         <section class="rt-card"><div class="ch"><i class="ti ti-refresh"></i> Subscription Option</div>
           <div class="cb"><div class="rt-subbody"><label class="rt-chk ${ORDER.sub ? "on" : ""}" id="rt-sub"><span class="cbx"><i class="ti ti-check"></i></span></label>
