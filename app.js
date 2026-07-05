@@ -758,22 +758,32 @@ async function loadOrder() {
   const lt = CATALOG[0];
   if (!lt) { c.innerHTML = `<div class="coming"><div class="badge"><i class="ti ti-alert-triangle"></i></div><b>No lead types configured</b><div>Add one in Admin → Pricing &amp; tiers (and make sure migrations 161–163 ran on this environment).</div></div>`; return; }
   if (!Object.keys(LEAD_TYPE_FIELDS_Q).length) await loadLeadTypeFields();
+  const licensed = (ME.licensed_states || []).map(s => String(s).toUpperCase()).filter(s => US_STATES.includes(s));
+  let sheets = [];
+  try { sheets = (await sb.from("lead_sheets").select("id,name,lead_type_id").eq("agent_id", ME.id).eq("active", true)).data || []; } catch { }
+  ORDER = {
+    lt, rtTiers: [], sel: 0,
+    states: new Set(licensed), days: new Set(["Mon", "Tue", "Wed", "Thu", "Fri"]),
+    maxPerDay: "", qty: 25, sub: false, sheets,
+    notif: { agentEmail: true, agentSms: true, agentApp: true, pdf: false, leadEmail: true, leadSms: true },
+    delivery: { ghl: !!ME.ghl_api_key, webhook: "", sheet_id: "" },
+  };
+  await setOrderType(lt.id);
+}
+
+// Switch the active lead type: reload that type's realtime quality tiers, keep the rest of the order state, re-render.
+async function setOrderType(ltId) {
+  const lt = (CATALOG || []).find(t => t.id === ltId) || ORDER.lt;
+  $("#content").querySelector(".rt-typesel")?.classList.remove("open");
   // the 3 realtime QUALITY tiers (standard / blended / premium) are the purchasable options
   let rtTiers = [];
   try { rtTiers = (await sb.from("lead_tiers").select("id,name,price,quality").eq("tenant_id", activeTenantId()).eq("lead_type_id", lt.id).eq("channel", "realtime")).data || []; } catch { }
   const qrank = { standard: 0, blended: 1, premium: 2 };
   rtTiers.sort((a, b) => (qrank[a.quality] ?? 9) - (qrank[b.quality] ?? 9));
   if (!rtTiers.length) rtTiers = [{ id: null, name: lt.name, price: 0, quality: "standard" }];
-  const licensed = (ME.licensed_states || []).map(s => String(s).toUpperCase()).filter(s => US_STATES.includes(s));
-  let sheets = [];
-  try { sheets = (await sb.from("lead_sheets").select("id,name,lead_type_id").eq("agent_id", ME.id).eq("active", true)).data || []; } catch { }
-  ORDER = {
-    lt, rtTiers, sel: Math.max(0, rtTiers.findIndex(t => t.quality === "blended")),
-    states: new Set(licensed), days: new Set(["Mon", "Tue", "Wed", "Thu", "Fri"]),
-    maxPerDay: "", qty: 25, sub: false, sheets,
-    notif: { agentEmail: true, agentSms: true, agentApp: true, pdf: false, leadEmail: true, leadSms: true },
-    delivery: { ghl: !!ME.ghl_api_key, webhook: "", sheet_id: "" },
-  };
+  ORDER.lt = lt;
+  ORDER.rtTiers = rtTiers;
+  ORDER.sel = Math.max(0, rtTiers.findIndex(t => t.quality === "blended"));
   renderOrder();
 }
 
@@ -797,8 +807,15 @@ function renderOrder() {
     const inner = `<div class="nm">${esc((t.name || q).replace(/^Real-?Time\s*/i, ""))}</div><div class="pr">${money(Number(t.price) || 0)}</div><div class="per">per lead</div><ul class="rt-feat">${(RT_FEAT[q] || []).map(f => `<li><i class="ti ti-check"></i>${esc(f)}</li>`).join("")}</ul>`;
     return `<div class="rt-tier ${pop ? "pop" : ""} ${i === ORDER.sel ? "on" : ""}" data-sel="${i}">${pop ? `<div class="ribbon">MOST POPULAR</div><div class="inner">${inner}</div>` : `${RT_PILL[q] || ""}${inner}`}</div>`;
   };
+  const types = (CATALOG || []).filter(t => t && t.name);
   c.innerHTML = `<div class="rt-order">
-    <header class="rt-head"><h1>High-Converting ${esc(lt.name)} Leads</h1><span class="accent">That Actually Close!</span></header>
+    <header class="rt-head">
+      <div class="rt-head-t"><h1>High-Converting ${esc(lt.name)} Leads</h1><span class="accent">That Actually Close!</span></div>
+      ${types.length > 1 ? `<div class="rt-typesel" id="rt-typesel">
+        <button class="rt-typebtn" id="rt-typebtn"><i class="ti ti-category-2"></i><span>${esc(lt.name)}</span><i class="ti ti-chevron-down chev"></i></button>
+        <div class="rt-typemenu">${types.map(t => `<button class="rt-typeopt ${t.id === lt.id ? "on" : ""}" data-lt="${t.id}"><i class="ti ti-${t.id === lt.id ? "check" : "point"}"></i>${esc(t.name)}</button>`).join("")}</div>
+      </div>` : ""}
+    </header>
     <div class="rt-grid">
       <div class="rt-col">
         <section class="rt-card rt-prod"><div class="ch"><i class="ti ti-users"></i> ${esc(lt.name)} Leads</div>
@@ -873,6 +890,14 @@ function rtTotals() {
   if (btn) btn.disabled = !ok; if (note) note.style.display = ok ? "none" : "flex";
 }
 function wireOrder(c) {
+  const tsel = c.querySelector("#rt-typesel");
+  if (tsel) {
+    c.querySelector("#rt-typebtn")?.addEventListener("click", e => { e.stopPropagation(); tsel.classList.toggle("open"); });
+    tsel.querySelectorAll(".rt-typeopt").forEach(b => b.addEventListener("click", () => { if (b.dataset.lt !== ORDER.lt.id) setOrderType(b.dataset.lt); else tsel.classList.remove("open"); }));
+    if (window._rtTypeClose) document.removeEventListener("click", window._rtTypeClose);
+    window._rtTypeClose = e => { if (!e.target.closest("#rt-typesel")) c.querySelector("#rt-typesel")?.classList.remove("open"); };
+    document.addEventListener("click", window._rtTypeClose);
+  }
   c.querySelectorAll(".rt-tier[data-sel]").forEach(el => el.addEventListener("click", () => {
     ORDER.sel = +el.dataset.sel;
     c.querySelectorAll(".rt-tier").forEach((t, i) => t.classList.toggle("on", i === ORDER.sel));
