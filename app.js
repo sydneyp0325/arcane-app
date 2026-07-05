@@ -774,13 +774,13 @@ async function loadOrder() {
 // Switch the active lead type: reload that type's realtime quality tiers, keep the rest of the order state, re-render.
 async function setOrderType(ltId) {
   $("#content").querySelector(".rt-typesel")?.classList.remove("open");
-  if (String(ltId).startsWith("coming:")) {
-    ORDER.lt = { id: ltId, name: String(ltId).slice(7), coming: true };
+  const lt = (CATALOG || []).find(t => t.id === ltId) || ORDER.lt;
+  if (isComing(lt.name)) {
+    ORDER.lt = { ...lt, coming: true };
     ORDER.rtTiers = []; ORDER.sel = 0;
     renderOrder();
     return;
   }
-  const lt = (CATALOG || []).find(t => t.id === ltId) || ORDER.lt;
   // the 3 realtime QUALITY tiers (standard / blended / premium) are the purchasable options
   let rtTiers = [];
   try { rtTiers = (await sb.from("lead_tiers").select("id,name,price,quality").eq("tenant_id", activeTenantId()).eq("lead_type_id", lt.id).eq("channel", "realtime")).data || []; } catch { }
@@ -843,8 +843,9 @@ const LT_DISPLAY = {
     prem: [{ g: "All Standard Fields +", f: ["Date Of Birth", "Age", "Marital Status", "Best Time to Contact", "IP Address", "Trusted Form URL"] }],
   },
 };
-// Lead types we sell but aren't generating yet — shown in the picker as "Coming Soon", ready to flip live.
-const LT_COMING = ["Annuities", "SPL"];
+// Catalog lead types we sell but aren't generating yet — shown in the picker as "Coming Soon", ready to flip live.
+const LT_COMING = ["Annuity", "Single Premium Life"];
+const isComing = name => LT_COMING.some(n => n.toLowerCase() === String(name || "").trim().toLowerCase());
 const ltDisp = name => LT_DISPLAY[String(name || "").trim().toLowerCase()] || null;
 const rtName = s => String(s || "").replace(/^Real-?Time\s*/i, "").trim();
 const fieldsTitle = () => `${rtName(curTier().name) || "Lead"} Lead Fields`;
@@ -859,11 +860,10 @@ function renderOrder() {
     const inner = `<div class="nm">${esc((t.name || q).replace(/^Real-?Time\s*/i, ""))}</div><div class="pr">${money(Number(t.price) || 0)}</div><div class="per">per lead</div><ul class="rt-feat">${(RT_FEAT[q] || []).map(f => `<li><i class="ti ti-check"></i>${esc(f)}</li>`).join("")}</ul>`;
     return `<div class="rt-tier ${pop ? "pop" : ""} ${i === ORDER.sel ? "on" : ""}" data-sel="${i}">${pop ? `<div class="ribbon">MOST POPULAR</div><div class="inner">${inner}</div>` : `${RT_PILL[q] || ""}${inner}`}</div>`;
   };
-  const realTypes = (CATALOG || []).filter(t => t && t.name);
-  const pickTypes = [...realTypes, ...LT_COMING.map(n => ({ id: "coming:" + n, name: n, coming: true }))];
+  const pickTypes = (CATALOG || []).filter(t => t && t.name);
   const picker = pickTypes.length > 1 ? `<div class="rt-typesel" id="rt-typesel">
         <button class="rt-typebtn" id="rt-typebtn"><i class="ti ti-category-2"></i><span>${esc(lt.name)}</span><i class="ti ti-chevron-down chev"></i></button>
-        <div class="rt-typemenu">${pickTypes.map(t => `<button class="rt-typeopt ${t.id === lt.id ? "on" : ""}" data-lt="${t.id}"><i class="ti ti-${t.id === lt.id ? "check" : t.coming ? "clock" : "point"}"></i>${esc(t.name)}${t.coming ? `<span class="rt-soon">Soon</span>` : ""}</button>`).join("")}</div>
+        <div class="rt-typemenu">${pickTypes.map(t => { const soon = isComing(t.name); return `<button class="rt-typeopt ${t.id === lt.id ? "on" : ""}" data-lt="${t.id}"><i class="ti ti-${t.id === lt.id ? "check" : soon ? "clock" : "point"}"></i>${esc(t.name)}${soon ? `<span class="rt-soon">Soon</span>` : ""}</button>`; }).join("")}</div>
       </div>` : "";
   const header = `<header class="rt-head">
       <div class="rt-head-t"><h1>High-Converting ${esc(lt.name)} Leads</h1><span class="accent">That Actually Close!</span></div>
