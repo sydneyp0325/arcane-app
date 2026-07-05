@@ -757,16 +757,20 @@ async function loadOrder() {
   if (!CATALOG) { try { CATALOG = (await sb.from("lead_types").select("*").eq("is_active", true).order("sort_order")).data || []; } catch { CATALOG = []; } }
   const lt = CATALOG[0];
   if (!lt) { c.innerHTML = `<div class="coming"><div class="badge"><i class="ti ti-alert-triangle"></i></div><b>No lead types configured</b><div>Add one in Admin → Pricing &amp; tiers (and make sure migrations 161–163 ran on this environment).</div></div>`; return; }
-  // every REALTIME tier is a purchasable option in the realtime funnel
+  if (!Object.keys(LEAD_TYPE_FIELDS_Q).length) await loadLeadTypeFields();
+  // the 3 realtime QUALITY tiers (standard / blended / premium) are the purchasable options
   let rtTiers = [];
-  try { rtTiers = (await sb.from("lead_tiers").select("id,name,price").eq("lead_type_id", lt.id).eq("channel", "realtime").order("max_age_days")).data || []; } catch { }
-  if (!rtTiers.length) rtTiers = [{ id: null, name: lt.name, price: Number(lt.realtime_price) || 0 }];
+  try { rtTiers = (await sb.from("lead_tiers").select("id,name,price,quality").eq("tenant_id", activeTenantId()).eq("lead_type_id", lt.id).eq("channel", "realtime")).data || []; } catch { }
+  const qrank = { standard: 0, blended: 1, premium: 2 };
+  rtTiers.sort((a, b) => (qrank[a.quality] ?? 9) - (qrank[b.quality] ?? 9));
+  if (!rtTiers.length) rtTiers = [{ id: null, name: lt.name, price: 0, quality: "standard" }];
   const licensed = (ME.licensed_states || []).map(s => String(s).toUpperCase()).filter(s => US_STATES.includes(s));
   let sheets = [];
-  try { sheets = (await sb.from("lead_sheets").select("id,name,lead_type_id").eq("agent_id", ME.id).eq("active", true).order("created_at", { ascending: false })).data || []; } catch { }
+  try { sheets = (await sb.from("lead_sheets").select("id,name,lead_type_id").eq("agent_id", ME.id).eq("active", true)).data || []; } catch { }
   ORDER = {
-    lt, rtTiers, sel: 0, states: new Set(licensed), days: new Set(["Mon", "Tue", "Wed", "Thu", "Fri"]),
-    maxPerDay: 10, qty: MIN_QTY, sub: false, sheets,
+    lt, rtTiers, sel: Math.max(0, rtTiers.findIndex(t => t.quality === "blended")),
+    states: new Set(licensed), days: new Set(["Mon", "Tue", "Wed", "Thu", "Fri"]),
+    maxPerDay: "", qty: MIN_QTY, sub: false, sheets,
     notif: { agentEmail: true, agentSms: true, agentApp: true, pdf: false, leadEmail: true, leadSms: true },
     delivery: { ghl: !!ME.ghl_api_key, webhook: "", sheet_id: "" },
   };
@@ -777,120 +781,152 @@ const curTier = () => ORDER.rtTiers[ORDER.sel] || {};
 const ltPrice = () => Number(curTier().price) || 0;
 const ordTotal = () => ORDER.qty * ltPrice();
 
+const RT_FEAT = {
+  standard: ["Basic contact info", "Lead-form generated", "Quick delivery"],
+  blended: ["Mix of Standard & Premium", "Better conversion rates", "Balanced quality", "Guaranteed 25% minimum premium"],
+  premium: ["Complete demographics", "Landing-page generated", "Best conversion rates"],
+};
+const RT_PILL = { standard: `<span class="qpill lowest">LOWEST COST</span>`, premium: `<span class="qpill highest">HIGHEST QUALITY</span>` };
 function renderOrder() {
   const c = $("#content"), lt = ORDER.lt;
-  c.innerHTML = `
-    <div class="page-title">Order leads</div>
-    <div class="page-sub">Real-time · ${esc(lt.lead_verticals?.name || "")} — delivered the moment they come in.</div>
-    <div class="order-grid">
-      <div>
-        <div class="ord-sec first">1 · Lead type</div>
-        <div class="lt-cards">${ORDER.rtTiers.map((t, i) => `<div class="lt-card ${i === ORDER.sel ? "on" : ""}" data-sel="${i}" style="cursor:pointer"><div class="lt-name">${esc(t.name)}</div><div class="lt-price">${money(Number(t.price) || 0)}<span>/lead</span></div></div>`).join("")}</div>
-        <div class="ord-sec">2 · States <span class="muted">(<span id="st-count">${ORDER.states.size}</span> selected)</span></div>
-        <div class="state-grid" id="state-grid">${US_STATES.map(s => `<span class="st ${ORDER.states.has(s) ? "on" : ""}" data-st="${s}">${s}</span>`).join("")}</div>
-        <div class="ord-sec">3 · Delivery days &amp; cap</div>
-        <div class="day-row" id="day-row">${DAYS.map(d => `<span class="day ${ORDER.days.has(d) ? "on" : ""}" data-day="${d}">${d}</span>`).join("")}</div>
-        <div class="cap-row"><span>Max per day</span><input class="in" id="cap-in" type="number" min="1" value="${ORDER.maxPerDay}" style="width:90px"></div>
-
-        <div class="ord-sec">4 · Thank-you page &amp; notifications</div>
-        <div class="collapse open" data-cl>
-          <div class="collapse-h"><span><i class="ti ti-bell lead"></i>Thank-you page &amp; notification preferences</span><i class="ti ti-chevron-down ch"></i></div>
-          <div class="collapse-b">
-            <button class="btn-soft" id="ty-defaults" type="button" style="margin-bottom:16px"><i class="ti ti-user-check"></i> Apply defaults from my profile</button>
-            <div class="np-grid">
-              <div><div class="np-lab">To agent</div><div class="cbx-row">
-                <span class="cbx on" data-np="agentEmail"><span class="box"><i class="ti ti-check"></i></span>Email</span><span class="cbx on" data-np="agentSms"><span class="box"><i class="ti ti-check"></i></span>SMS</span><span class="cbx on" data-np="agentApp"><span class="box"><i class="ti ti-check"></i></span>In-app</span><span class="cbx" data-np="pdf"><span class="box"><i class="ti ti-check"></i></span>Incl. PDF</span>
-              </div></div>
-              <div><div class="np-lab">To lead</div><div class="cbx-row">
-                <span class="cbx on" data-np="leadEmail"><span class="box"><i class="ti ti-check"></i></span>Email</span><span class="cbx on" data-np="leadSms"><span class="box"><i class="ti ti-check"></i></span>SMS</span>
-              </div></div>
-            </div>
-            <div class="ty-grid">
-              <div class="field"><label>Display name</label><input class="in" id="ty-name" value="${esc(ME.full_name || "")}"></div>
-              <div class="field"><label>Title</label><input class="in" id="ty-title" value="${esc(ME.role_title || "")}"></div>
-              <div class="field"><label>Phone</label><input class="in" id="ty-phone" value="${esc(ME.public_phone || "")}"></div>
-              <div class="field"><label>Email</label><input class="in" id="ty-email" value="${esc(ME.email || "")}"></div>
-              <div class="field"><label>NPN</label><input class="in" id="ty-npn" value="${esc(ME.npn || "")}"></div>
-              <div class="field"><label>Calendar link</label><input class="in" id="ty-cal" placeholder="https://calendly.com/…"></div>
-            </div>
-            <div class="ord-note">Defaults come from your Profile — the lead sees these on the thank-you page.</div>
-          </div>
-        </div>
-
-        <div class="ord-sec">5 · Lead delivery integration</div>
-        <div class="collapse open" data-cl>
-          <div class="collapse-h"><span><i class="ti ti-plug lead"></i>Where should these leads be delivered?</span><i class="ti ti-chevron-down ch"></i></div>
-          <div class="collapse-b">
-            <div class="int-row"><div><b>GoHighLevel</b><div class="muted2">${ME.ghl_api_key ? "Connected on your profile" : "Not connected"}</div></div><span class="cbx ${ORDER.delivery.ghl ? "on" : ""}" data-dv="ghl"><span class="box"><i class="ti ti-check"></i></span>Deliver to GHL</span></div>
-            <div class="field" style="margin:14px 0"><label>Webhook URL</label><input class="in" id="dv-webhook" placeholder="https://hook.…"></div>
-            <div class="field" style="margin:14px 0"><label>Google Sheet</label>
-              ${ORDER.sheets?.length
-    ? `<select class="in" id="dv-sheet"><option value="">— Don't deliver to a sheet —</option>${ORDER.sheets.map(s => `<option value="${s.id}" ${ORDER.delivery.sheet_id === s.id ? "selected" : ""}>${esc(s.name || "Untitled sheet")}</option>`).join("")}</select>`
-    : `<div class="muted2">No Google Sheets yet — create one on the Integrations page, then it'll show here.</div>`}</div>
-            <div class="ord-note">Set your default integrations on the Integrations page.</div>
-          </div>
-        </div>
+  const fq = LEAD_TYPE_FIELDS_Q[lt.name] || [];
+  const stdF = fq.filter(f => (f[2] || "standard") === "standard"), premF = fq.filter(f => f[2] === "premium");
+  const chk = (on, attr, key, label) => `<span class="rt-chk ${on ? "on" : ""}" data-${attr}="${key}"><span class="cbx"><i class="ti ti-check"></i></span>${label}</span>`;
+  const tierCard = (t, i) => {
+    const q = t.quality || "standard", pop = q === "blended";
+    const inner = `<div class="nm">${esc((t.name || q).replace(/^Real-?Time\s*/i, ""))}</div><div class="pr">${money(Number(t.price) || 0)}</div><div class="per">per lead</div><ul class="rt-feat">${(RT_FEAT[q] || []).map(f => `<li><i class="ti ti-check"></i>${esc(f)}</li>`).join("")}</ul>`;
+    return `<div class="rt-tier ${pop ? "pop" : ""} ${i === ORDER.sel ? "on" : ""}" data-sel="${i}">${pop ? `<div class="ribbon">MOST POPULAR</div><div class="inner">${inner}</div>` : `${RT_PILL[q] || ""}${inner}`}</div>`;
+  };
+  c.innerHTML = `<div class="rt-order">
+    <header class="rt-head"><h1>High-Converting ${esc(lt.name)} Leads</h1><span class="accent">That Actually Close!</span></header>
+    <div class="rt-grid">
+      <div class="rt-col">
+        <section class="rt-card rt-prod"><div class="ch"><i class="ti ti-users"></i> ${esc(lt.name)} Leads</div>
+          <div class="cb"><div class="rt-logo"><img src="logo.svg?v=1" alt="Arcane"></div>
+            <h3>${esc(lt.name)}</h3>
+            <p class="desc">Real-time ${esc(lt.name)} leads delivered to your CRM the moment they opt in — exclusive to you.</p>
+            <div class="rt-tags"><span class="rt-tag green">Real-Time</span><span class="rt-tag gold">Exclusive</span><span class="rt-tag blue">TCPA Compliant</span></div></div></section>
+        <section class="rt-card rt-fields"><div class="ch"><i class="ti ti-list"></i> Lead Fields</div>
+          <div class="cb"><h4>${esc((curTier().name || "Lead"))} Fields</h4>
+            <div class="rt-fcols">
+              <div><h5>Standard Lead Fields</h5><div class="rt-fg"><ul>${(stdF.length ? stdF : [["", "—"]]).map(f => `<li>${esc(f[1])}</li>`).join("")}</ul></div><p class="rt-hint">Generated primarily through lead forms</p></div>
+              <div><h5>Premium Lead Fields</h5><p class="rt-plus">All Standard Fields +</p><div class="rt-fg"><ul>${(premF.length ? premF : [["", "—"]]).map(f => `<li>${esc(f[1])}</li>`).join("")}</ul></div><p class="rt-hint">Generated on landing pages / websites</p></div>
+            </div></div></section>
       </div>
-      <aside class="ord-summary">
-        <div class="ord-sec first">Your order</div>
-        <div class="sum-row"><span>Quantity <span class="muted">(min ${MIN_QTY})</span></span><span class="qstep"><button data-q="-1">−</button><b class="num" id="ord-qty">${ORDER.qty}</b><button data-q="1">+</button></span></div>
-        <div class="sum-row"><span>Per lead</span><span class="num" id="per-lead">${money(ltPrice())}</span></div>
-        <div class="sum-total"><span>Total</span><b class="num" id="ord-total">${money(ordTotal())}</b></div>
-        <label class="sub-toggle"><span>Weekly subscription</span><button type="button" class="toggle ${ORDER.sub ? "" : "off"}" id="ord-sub"><b></b></button></label>
-        <button class="btn-gold btn-block" id="ord-add">Add to cart</button>
-        <div class="ord-note"><i class="ti ti-shield-check"></i> Replacement guarantee on invalid leads.</div>
-      </aside>
-    </div>`;
-  $("#state-grid").addEventListener("click", e => {
-    const s = e.target.dataset.st; if (!s) return;
-    if (ORDER.states.has(s)) { ORDER.states.delete(s); e.target.classList.remove("on"); }
-    else { ORDER.states.add(s); e.target.classList.add("on"); }
-    $("#st-count").textContent = ORDER.states.size;
-  });
-  $("#day-row").addEventListener("click", e => {
-    const d = e.target.dataset.day; if (!d) return;
-    if (ORDER.days.has(d)) { ORDER.days.delete(d); e.target.classList.remove("on"); }
-    else { ORDER.days.add(d); e.target.classList.add("on"); }
-  });
-  $("#cap-in").addEventListener("change", e => { ORDER.maxPerDay = Math.max(1, parseInt(e.target.value) || 1); e.target.value = ORDER.maxPerDay; });
-  c.querySelectorAll(".qstep button").forEach(b => b.addEventListener("click", () => {
-    ORDER.qty = Math.max(MIN_QTY, ORDER.qty + parseInt(b.dataset.q));
-    $("#ord-qty").textContent = ORDER.qty; $("#ord-total").textContent = money(ordTotal());
-  }));
-  $("#ord-sub").addEventListener("click", () => { ORDER.sub = !ORDER.sub; $("#ord-sub").classList.toggle("off", !ORDER.sub); });
-  c.querySelectorAll(".lt-card[data-sel]").forEach(el => el.addEventListener("click", () => {
+      <div class="rt-col">
+        <section class="rt-card"><div class="ch"><i class="ti ti-star"></i> Select Quality</div><div class="cb"><div class="rt-tiers">${ORDER.rtTiers.map(tierCard).join("")}</div></div></section>
+        <section class="rt-card coll open"><div class="ch"><i class="ti ti-settings"></i> Lead Order Options <i class="ti ti-chevron-down chev"></i></div>
+          <div class="cb">
+            <p class="rt-lab">Select Your States (<span id="rt-stc">${ORDER.states.size}</span>)</p>
+            <div class="rt-states">${US_STATES.map(s => `<span class="rt-st ${ORDER.states.has(s) ? "on" : ""}" data-st="${s}">${s}</span>`).join("")}</div>
+            <div class="rt-links"><button class="rt-linkb" data-stact="clear">Clear All</button><button class="rt-linkb" data-stact="all">Select All</button><button class="rt-linkb" data-stact="profile">Copy From Profile</button></div>
+            <p class="rt-lab mt">Delivery Days</p>
+            <div class="rt-days">${DAYS.map(d => `<span class="rt-day ${ORDER.days.has(d) ? "on" : ""}" data-day="${d.toUpperCase()}">${d.toUpperCase()}</span>`).join("")}</div>
+            <p class="rt-lab mt">Max Per Day</p>
+            <div class="rt-step"><button data-cap="-1">–</button><input id="rt-cap" value="${ORDER.maxPerDay}"><button data-cap="1">+</button></div>
+            <p class="rt-hint">Minimum 5. Leave blank for no limit.</p>
+            <p class="rt-pnote">Set your default order options on your <a data-goto="settings">Profile</a> page.</p>
+          </div></section>
+        <section class="rt-card coll open"><div class="ch"><i class="ti ti-bell"></i> Thank You Page &amp; Notification Preferences <i class="ti ti-chevron-down chev"></i></div>
+          <div class="cb">
+            <button class="rt-btn-o" id="rt-tydef"><i class="ti ti-user-check"></i> Apply defaults from my profile</button>
+            <p class="rt-sub-h">Notification Preferences</p>
+            <div class="rt-ncols">
+              <div><div class="rt-tolab"><i class="ti ti-user"></i> To Agent</div><div class="rt-chk-row">${chk(ORDER.notif.agentEmail, "np", "agentEmail", "Email")}${chk(ORDER.notif.agentSms, "np", "agentSms", "SMS")}${chk(ORDER.notif.agentApp, "np", "agentApp", "In App")}</div></div>
+              <div><div class="rt-tolab"><i class="ti ti-user"></i> To Lead</div><div class="rt-chk-row">${chk(ORDER.notif.leadEmail, "np", "leadEmail", "Email")}${chk(ORDER.notif.leadSms, "np", "leadSms", "SMS")}</div></div>
+            </div>
+            <div style="margin-top:12px">${chk(ORDER.notif.pdf, "np", "pdf", "Incl PDF")}</div>
+            <div class="rt-fgrid">
+              <div class="rt-field"><label>Display Name</label><input id="rt-ty-name" value="${esc(ME.full_name || "")}"></div>
+              <div class="rt-field"><label>Title</label><input id="rt-ty-title" value="${esc(ME.role_title || "")}"></div>
+              <div class="rt-field"><label>Phone Number</label><input id="rt-ty-phone" value="${esc(ME.public_phone || "")}"></div>
+              <div class="rt-field"><label>Email</label><input id="rt-ty-email" value="${esc(ME.email || "")}"></div>
+              <div class="rt-field"><label>NPN Number</label><input id="rt-ty-npn" value="${esc(ME.npn || "")}"></div>
+              <div class="rt-field"><label>Calendar Link</label><input id="rt-ty-cal" placeholder="https://calendly.com/…"></div>
+            </div></div></section>
+        <section class="rt-card coll open rt-int"><div class="ch"><i class="ti ti-plug"></i> Lead Delivery Integration Options <i class="ti ti-chevron-down chev"></i></div>
+          <div class="cb">
+            <div class="rt-int-two">
+              <div><h5>GHL Integration</h5>${chk(ORDER.delivery.ghl, "dv", "ghl", "Deliver to GoHighLevel")}</div>
+              <div class="rt-field"><label>Google Sheet Integration</label>${ORDER.sheets?.length ? `<select id="rt-sheet"><option value="">Select Google Sheet</option>${ORDER.sheets.map(s => `<option value="${s.id}">${esc(s.name || "Untitled")}</option>`).join("")}</select>` : `<div class="muted">No Google Sheets connected.</div>`}</div>
+            </div>
+            <div class="rt-field"><label>Webhook URL Integration</label><input id="rt-webhook" placeholder="Enter webhook URL"></div>
+            <p class="rt-pnote" style="margin-top:14px">Set your default integrations on the <a data-goto="settings">Integrations</a> page.</p>
+          </div></section>
+        <section class="rt-card rt-total"><div class="ch"><i class="ti ti-shopping-cart"></i> Your Order Total</div>
+          <div class="cb"><p class="rt-lab">Lead Quantity</p>
+            <div class="rt-qrow"><div class="rt-step"><button data-qty="-1">–</button><input id="rt-qty" value="${ORDER.qty}"><button data-qty="1">+</button></div><span class="rt-qmin">${MIN_QTY} Lead Minimum</span></div>
+            <div class="rt-amt" id="rt-amt">${money(ordTotal())} <small>(${money(ltPrice())} per lead)</small></div></div></section>
+        <section class="rt-card"><div class="ch"><i class="ti ti-refresh"></i> Subscription Option</div>
+          <div class="cb"><div class="rt-subbody"><label class="rt-chk ${ORDER.sub ? "on" : ""}" id="rt-sub"><span class="cbx"><i class="ti ti-check"></i></span></label>
+            <div><b>Put me on a weekly recurring subscription to get the lowest price per lead.</b><p>Save on every lead with weekly recurring orders. Minimum of 4 weekly payments (initial + 3 renewals); can't be paused or canceled until all 4 are collected.</p></div></div></div></section>
+        <div><div class="rt-cartnote" id="rt-cartnote" style="display:none"><i class="ti ti-alert-circle"></i> Select at least one state to add to cart.</div>
+          <button class="rt-add" id="rt-add">Add To Cart</button></div>
+      </div>
+    </div></div>`;
+  wireOrder(c);
+}
+function rtTotals() {
+  const amt = $("#rt-amt"); if (amt) amt.innerHTML = `${money(ordTotal())} <small>(${money(ltPrice())} per lead)</small>`;
+  const ok = ORDER.states.size > 0 && ORDER.qty >= MIN_QTY;
+  const btn = $("#rt-add"), note = $("#rt-cartnote");
+  if (btn) btn.disabled = !ok; if (note) note.style.display = ok ? "none" : "flex";
+}
+function wireOrder(c) {
+  c.querySelectorAll(".rt-tier[data-sel]").forEach(el => el.addEventListener("click", () => {
     ORDER.sel = +el.dataset.sel;
-    c.querySelectorAll(".lt-card").forEach((card, i) => card.classList.toggle("on", i === ORDER.sel));
-    $("#per-lead").textContent = money(ltPrice());
-    $("#ord-total").textContent = money(ordTotal());
+    c.querySelectorAll(".rt-tier").forEach((t, i) => t.classList.toggle("on", i === ORDER.sel));
+    const h4 = c.querySelector(".rt-fields h4"); if (h4) h4.textContent = (curTier().name || "Lead") + " Fields";
+    rtTotals();
   }));
-  c.querySelectorAll(".collapse-h").forEach(h => h.addEventListener("click", () => h.parentElement.classList.toggle("open")));
-  c.querySelectorAll(".cbx[data-np]").forEach(el => el.addEventListener("click", () => { const k = el.dataset.np; ORDER.notif[k] = !ORDER.notif[k]; el.classList.toggle("on", ORDER.notif[k]); }));
-  c.querySelectorAll(".cbx[data-dv]").forEach(el => el.addEventListener("click", () => { ORDER.delivery.ghl = !ORDER.delivery.ghl; el.classList.toggle("on", ORDER.delivery.ghl); }));
-  $("#dv-sheet")?.addEventListener("change", e => { ORDER.delivery.sheet_id = e.target.value; });
-  $("#ty-defaults").addEventListener("click", () => {
-    $("#ty-name").value = ME.full_name || ""; $("#ty-title").value = ME.role_title || "";
-    $("#ty-phone").value = ME.public_phone || ""; $("#ty-email").value = ME.email || ""; $("#ty-npn").value = ME.npn || "";
+  c.querySelectorAll(".rt-card.coll > .ch").forEach(h => h.addEventListener("click", () => h.parentElement.classList.toggle("open")));
+  c.querySelector(".rt-states")?.addEventListener("click", e => {
+    const s = e.target.dataset.st; if (!s) return;
+    if (ORDER.states.has(s)) { ORDER.states.delete(s); e.target.classList.remove("on"); } else { ORDER.states.add(s); e.target.classList.add("on"); }
+    $("#rt-stc").textContent = ORDER.states.size; rtTotals();
   });
-  $("#ord-add").addEventListener("click", addToCart);
+  c.querySelectorAll("[data-stact]").forEach(b => b.addEventListener("click", () => {
+    const a = b.dataset.stact;
+    ORDER.states = a === "clear" ? new Set() : a === "all" ? new Set(US_STATES) : new Set((ME.licensed_states || []).map(s => String(s).toUpperCase()).filter(s => US_STATES.includes(s)));
+    c.querySelectorAll(".rt-st").forEach(x => x.classList.toggle("on", ORDER.states.has(x.dataset.st)));
+    $("#rt-stc").textContent = ORDER.states.size; rtTotals();
+  }));
+  c.querySelector(".rt-days")?.addEventListener("click", e => {
+    const d = DAYS.find(x => x.toUpperCase() === e.target.dataset.day); if (!d) return;
+    if (ORDER.days.has(d)) { ORDER.days.delete(d); e.target.classList.remove("on"); } else { ORDER.days.add(d); e.target.classList.add("on"); }
+  });
+  const cap = $("#rt-cap");
+  c.querySelectorAll("[data-cap]").forEach(b => b.addEventListener("click", () => { let v = Math.max(0, (parseInt(cap.value) || 0) + (+b.dataset.cap)); cap.value = v || ""; ORDER.maxPerDay = v || ""; }));
+  cap?.addEventListener("change", () => { const v = parseInt(cap.value); ORDER.maxPerDay = v > 0 ? v : ""; cap.value = ORDER.maxPerDay; });
+  const qty = $("#rt-qty");
+  c.querySelectorAll("[data-qty]").forEach(b => b.addEventListener("click", () => { ORDER.qty = Math.max(MIN_QTY, (parseInt(qty.value) || MIN_QTY) + (+b.dataset.qty)); qty.value = ORDER.qty; rtTotals(); }));
+  qty?.addEventListener("change", () => { ORDER.qty = Math.max(MIN_QTY, parseInt(qty.value) || MIN_QTY); qty.value = ORDER.qty; rtTotals(); });
+  c.querySelectorAll(".rt-chk[data-np]").forEach(el => el.addEventListener("click", () => { const k = el.dataset.np; ORDER.notif[k] = !ORDER.notif[k]; el.classList.toggle("on", ORDER.notif[k]); }));
+  c.querySelectorAll(".rt-chk[data-dv]").forEach(el => el.addEventListener("click", () => { ORDER.delivery.ghl = !ORDER.delivery.ghl; el.classList.toggle("on", ORDER.delivery.ghl); }));
+  $("#rt-sheet")?.addEventListener("change", e => { ORDER.delivery.sheet_id = e.target.value; });
+  $("#rt-sub")?.addEventListener("click", () => { ORDER.sub = !ORDER.sub; $("#rt-sub").classList.toggle("on", ORDER.sub); });
+  $("#rt-tydef")?.addEventListener("click", () => { $("#rt-ty-name").value = ME.full_name || ""; $("#rt-ty-title").value = ME.role_title || ""; $("#rt-ty-phone").value = ME.public_phone || ""; $("#rt-ty-email").value = ME.email || ""; $("#rt-ty-npn").value = ME.npn || ""; });
+  c.querySelectorAll("[data-goto]").forEach(a => a.addEventListener("click", () => go(a.dataset.goto)));
+  $("#rt-add")?.addEventListener("click", addToCart);
+  rtTotals();
 }
 
 function addToCart() {
-  if (!ORDER.states.size) { alert("Select at least one state to receive leads from."); return; }
-  const webhook = ($("#dv-webhook")?.value || "").trim();
+  if (!ORDER.states.size) { toast("Select at least one state to receive leads from."); return; }
+  const t = curTier();
+  const webhook = ($("#rt-webhook")?.value || "").trim();
   const sheetId = ORDER.delivery.sheet_id || "";
   const sheetName = ORDER.sheets?.find(s => s.id === sheetId)?.name;
   const deliver = [ORDER.delivery.ghl ? "GoHighLevel" : "", webhook ? "Webhook" : "", sheetName ? "Sheet" : ""].filter(Boolean).join(" + ") || "Portal only";
-  if (deliver === "Portal only" && !confirm("No delivery integration selected — leads will only show in the portal. Continue?")) return;
   CART.push({
-    name: curTier().name || ORDER.lt.name, vertical: ORDER.lt.lead_verticals?.name || "", channel: "Real-time",
+    name: `${ORDER.lt.name} · ${t.name || (t.quality || "standard")}`, channel: "Real-time",
+    lead_type_id: ORDER.lt.id, tier_id: t.id, quality: t.quality || "standard",
     qty: ORDER.qty, price: ltPrice(), total: ordTotal(),
-    states: [...ORDER.states], days: [...ORDER.days], maxPerDay: ORDER.maxPerDay, sub: ORDER.sub,
-    deliver, delivery: { ghl: ORDER.delivery.ghl, webhook, sheet_id: sheetId },
-    notif: { ...ORDER.notif },
+    states: [...ORDER.states], days: [...ORDER.days], maxPerDay: ORDER.maxPerDay || null, sub: ORDER.sub,
+    deliver, delivery: { ghl: ORDER.delivery.ghl, webhook, sheet_id: sheetId }, notif: { ...ORDER.notif },
     thankyou: {
-      name: $("#ty-name")?.value || "", title: $("#ty-title")?.value || "", phone: $("#ty-phone")?.value || "",
-      email: $("#ty-email")?.value || "", npn: $("#ty-npn")?.value || "", calendar: $("#ty-cal")?.value || "",
+      name: $("#rt-ty-name")?.value || "", title: $("#rt-ty-title")?.value || "", phone: $("#rt-ty-phone")?.value || "",
+      email: $("#rt-ty-email")?.value || "", npn: $("#rt-ty-npn")?.value || "", calendar: $("#rt-ty-cal")?.value || "",
     },
   });
   updateCartCount();
@@ -1116,12 +1152,18 @@ const PF_WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 // These maps are populated from the DB by loadLeadTypeFields().
 let LEAD_TYPE_FIELDS = {};   // { typeName: [[field_key, label], ...] }
 let LEAD_TYPE_IDS = {};      // { typeName: lead_type_id }
+let LEAD_TYPE_FIELDS_Q = {};   // { typeName: [[key, label, min_quality], ...] } — full detail incl. quality tier
 async function loadLeadTypeFields() {
   try {
-    const rows = (await sb.from("lead_types").select("id,name,sort_order, lead_type_fields(field_key,label,sort_order)").order("sort_order")).data || [];
-    const map = {}, ids = {};
-    rows.forEach(t => { ids[t.name] = t.id; map[t.name] = (t.lead_type_fields || []).slice().sort((a, b) => a.sort_order - b.sort_order).map(f => [f.field_key, f.label]); });
-    if (Object.keys(map).length) { LEAD_TYPE_FIELDS = map; LEAD_TYPE_IDS = ids; }
+    const rows = (await sb.from("lead_types").select("id,name,sort_order, lead_type_fields(field_key,label,sort_order,min_quality)").order("sort_order")).data || [];
+    const map = {}, ids = {}, det = {};
+    rows.forEach(t => {
+      ids[t.name] = t.id;
+      const fs = (t.lead_type_fields || []).slice().sort((a, b) => a.sort_order - b.sort_order);
+      map[t.name] = fs.map(f => [f.field_key, f.label]);
+      det[t.name] = fs.map(f => [f.field_key, f.label, f.min_quality || "standard"]);
+    });
+    if (Object.keys(map).length) { LEAD_TYPE_FIELDS = map; LEAD_TYPE_IDS = ids; LEAD_TYPE_FIELDS_Q = det; }
   } catch { }
 }
 const PF_LEAD_FIELDS = () => Object.keys(LEAD_TYPE_FIELDS);
