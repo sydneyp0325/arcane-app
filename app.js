@@ -2003,28 +2003,101 @@ function openTaskModal(presetLead = null) {
 }
 
 // ---------------------------------------------------------------- aged store
+// full state names for the aged store table
+const US_STATE_NAMES = [["AL","Alabama"],["AK","Alaska"],["AZ","Arizona"],["AR","Arkansas"],["CA","California"],["CO","Colorado"],["CT","Connecticut"],["DE","Delaware"],["DC","District of Columbia"],["FL","Florida"],["GA","Georgia"],["HI","Hawaii"],["ID","Idaho"],["IL","Illinois"],["IN","Indiana"],["IA","Iowa"],["KS","Kansas"],["KY","Kentucky"],["LA","Louisiana"],["ME","Maine"],["MD","Maryland"],["MA","Massachusetts"],["MI","Michigan"],["MN","Minnesota"],["MS","Mississippi"],["MO","Missouri"],["MT","Montana"],["NE","Nebraska"],["NV","Nevada"],["NH","New Hampshire"],["NJ","New Jersey"],["NM","New Mexico"],["NY","New York"],["NC","North Carolina"],["ND","North Dakota"],["OH","Ohio"],["OK","Oklahoma"],["OR","Oregon"],["PA","Pennsylvania"],["RI","Rhode Island"],["SC","South Carolina"],["SD","South Dakota"],["TN","Tennessee"],["TX","Texas"],["UT","Utah"],["VT","Vermont"],["VA","Virginia"],["WA","Washington"],["WV","West Virginia"],["WI","Wisconsin"],["WY","Wyoming"]];
+// tile-grid [col,row] — geographic-ish arrangement so it reads as the US
+const US_TILES = { ME:[10,0], VT:[9,1], NH:[10,1], WA:[0,2], ID:[1,2], MT:[2,2], ND:[3,2], MN:[4,2], WI:[5,2], MI:[7,2], NY:[8,2], MA:[9,2], RI:[10,2], OR:[0,3], NV:[1,3], WY:[2,3], SD:[3,3], IA:[4,3], IL:[5,3], IN:[6,3], OH:[7,3], PA:[8,3], NJ:[9,3], CT:[10,3], CA:[0,4], UT:[1,4], CO:[2,4], NE:[3,4], MO:[4,4], KY:[5,4], WV:[6,4], VA:[7,4], MD:[8,4], DE:[9,4], AZ:[1,5], NM:[2,5], KS:[3,5], AR:[4,5], TN:[5,5], NC:[6,5], SC:[7,5], DC:[8,5], OK:[3,6], LA:[4,6], MS:[5,6], AL:[6,6], GA:[7,6], AK:[0,7], HI:[1,7], TX:[3,7], FL:[8,7] };
+function usTileMap(conc) {
+  const cell = 40, gap = 5, cols = 11, rows = 8, w = cols * (cell + gap), h = rows * (cell + gap);
+  const max = Math.max(0, ...Object.values(conc || {}));
+  const fill = v => { if (!max || !v) return "#1a2130"; const t = v / max, L = (a, b) => Math.round(a + (b - a) * t); return `rgb(${L(0x8a, 0xf6)},${L(0x5a, 0xec)},${L(0x1e, 0xd6)})`; };
+  let cells = "";
+  for (const [st, [col, row]] of Object.entries(US_TILES)) {
+    const x = col * (cell + gap), y = row * (cell + gap), v = conc?.[st] || 0, dark = !max || v / max < 0.5;
+    cells += `<g class="ag-tile"><rect x="${x}" y="${y}" width="${cell}" height="${cell}" rx="7" fill="${fill(v)}" stroke="#0a0d13" stroke-width="2"><title>${st}: ${v}</title></rect><text x="${x + cell / 2}" y="${y + cell / 2 + 3}" text-anchor="middle" style="fill:${dark ? '#8a94a3' : '#14110a'}">${st}</text></g>`;
+  }
+  return `<svg class="ag-usmap" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="US lead concentration by state">${cells}</svg>`;
+}
+let AGED = null;
+const AG_MIN = 25;
 async function loadAged() {
   const c = $("#content");
-  c.innerHTML = `<div class="page-title">Aged lead store</div><div class="page-sub">Discounted aged leads by state.</div><div class="coming"><span class="spin"></span></div>`;
+  c.innerHTML = `<div class="page-title">Aged lead store</div><div class="coming"><span class="spin"></span></div>`;
   if (!CATALOG) { try { CATALOG = (await sb.from("lead_types").select("*").eq("is_active", true).order("sort_order")).data || []; } catch { CATALOG = []; } }
-  let avail = []; try { avail = (await sb.rpc("claimable_leads")).data || []; } catch { avail = []; }
-  const byState = {}; avail.forEach(r => { byState[r.state] = (byState[r.state] || 0) + (r.available || 0); });
-  const states = Object.entries(byState).sort((a, b) => b[1] - a[1]);
-  const price = CATALOG[0] ? Number(CATALOG[0].aged_price) || 0 : 0;
-  const max = states.length ? states[0][1] : 1;
-  c.innerHTML = `
-    <div class="page-title">Aged lead store</div><div class="page-sub">Discounted aged leads · ${money(price)}/lead.</div>
-    ${states.length ? `<div style="display:flex;flex-direction:column;gap:8px;max-width:700px">${states.map(([st, n]) => `
-      <div class="cart-item" style="padding:11px 15px">
-        <div style="display:flex;align-items:center;gap:14px;flex:1"><b style="width:48px">${esc(st)}</b><div class="bar" style="flex:1;max-width:280px"><i style="width:${Math.round(n / max * 100)}%;background:var(--gold)"></i></div><span class="num muted2">${n} available</span></div>
-        <button class="btn-gold" style="padding:6px 13px" data-aged="${esc(st)}" data-n="${n}">Add 20</button>
-      </div>`).join("")}</div>` : `<div class="coming"><div class="badge"><i class="ti ti-clock-hour-4"></i></div><b>No aged inventory yet</b><div>Aged leads appear here as fresh leads age past the threshold.</div></div>`}`;
-  c.querySelectorAll("[data-aged]").forEach(b => b.addEventListener("click", () => {
-    const st = b.dataset.aged, qty = Math.min(20, parseInt(b.dataset.n) || 20);
-    CART.push({ name: CATALOG[0]?.name || "Premium", vertical: CATALOG[0]?.lead_verticals?.name || "Mortgage Protection", channel: "Aged", qty, price, total: qty * price, states: [st], days: [], maxPerDay: qty, sub: false, deliver: "Portal only", delivery: { ghl: false, webhook: "" }, notif: {}, thankyou: {} });
-    updateCartCount();
-    go("cart");
-  }));
+  const lt = CATALOG[0];
+  if (!lt) { c.innerHTML = `<div class="coming"><div class="badge"><i class="ti ti-alert-triangle"></i></div><b>No lead types configured</b><div>Add one in Arcane HQ → Catalog.</div></div>`; return; }
+  AGED = { lt, buckets: await agBuckets(lt.id), bucketId: "", avail: {}, qty: {}, cart: [] };
+  renderAged();
+}
+async function agBuckets(typeId) {
+  try { return (await sb.from("lead_tiers").select("id,name,price,min_age_days,max_age_days").eq("tenant_id", activeTenantId()).eq("lead_type_id", typeId).eq("channel", "aged").order("min_age_days")).data || []; } catch { return []; }
+}
+function renderAged() {
+  const c = $("#content"), a = AGED;
+  const bucket = a.buckets.find(b => b.id === a.bucketId);
+  const price = bucket ? Number(bucket.price) || 0 : 0;
+  const maxA = Math.max(1, ...Object.values(a.avail));
+  const cartTotal = a.cart.reduce((s, i) => s + i.total, 0);
+  const row = (code, name) => {
+    const av = a.avail[code] || 0, en = bucket && av > 0;
+    return `<div class="ag-row">
+      <div class="ag-stcell"><span class="ag-flag">${code}</span>${esc(name)}</div>
+      <div class="ag-price">${bucket ? money(price) : "--"}</div>
+      <div class="ag-avail"><span class="ag-bar"><i style="width:${Math.round(av / maxA * 100)}%"></i></span><span class="n">${av}</span></div>
+      <div class="ag-qty"><input data-qst="${code}" placeholder="0" value="${a.qty[code] || ""}" ${en ? "" : "disabled"}></div>
+      <div class="ag-cartcell"><button class="ag-addc" data-addst="${code}" ${en ? "" : "disabled"}><i class="ti ti-shopping-cart"></i> Add to Cart</button></div>
+    </div>`;
+  };
+  c.innerHTML = `<div class="ag-store">
+    <div class="ag-banner"><div class="ag-bic"><i class="ti ti-building-store"></i></div>
+      <div><h1>Aged Lead Store</h1><p>Buy aged leads by state, age bucket, and quantity</p></div>
+      <div class="ag-bact"><button class="ag-btn-g"><i class="ti ti-file-check"></i> Lead Replacement Policy</button>
+        <span class="ag-btn-g" style="border-style:dashed"><i class="ti ti-shopping-cart"></i> Cart · ${a.cart.length}</span></div></div>
+    <div class="ag-layout">
+      <section class="ag-card">
+        <div class="ag-ch"><i class="ti ti-map-pin"></i> State Availability</div>
+        <div class="ag-selrow">
+          <p class="ag-instr">Select your lead type first, then select the lead bucket to display the lead counts available:</p>
+          <div class="ag-selg"><span class="ag-stepn">1</span><div class="ag-sel"><label>LEAD TYPE</label><select id="ag-type">${CATALOG.map(t => `<option value="${t.id}" ${t.id === a.lt.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div></div>
+          <div class="ag-selg"><span class="ag-stepn">2</span><div class="ag-sel"><label>BUCKET</label><select id="ag-bucket" class="${a.bucketId ? "" : "ph"}"><option value="">(Select Bucket)</option>${a.buckets.map(b => `<option value="${b.id}" ${b.id === a.bucketId ? "selected" : ""}>${esc(b.name)}</option>`).join("")}</select></div><span class="ag-minb">Min: ${AG_MIN} leads</span></div>
+        </div>
+        <div class="ag-thead"><span>STATE</span><span>PRICE</span><span class="r">AVAILABILITY</span><span class="r">QUANTITY</span><span class="r">CART</span></div>
+        <div class="ag-scroll">${US_STATE_NAMES.map(([code, name]) => row(code, name)).join("")}</div>
+      </section>
+      <div class="ag-col">
+        <section class="ag-card"><div class="ag-ch"><i class="ti ti-shopping-cart"></i> Your Cart <span class="cnt">${a.cart.length}</span></div>
+          ${a.cart.length ? `<div class="ag-cline">${a.cart.map((i, ix) => `<div class="ag-citem"><b>${i.qty}</b> × ${esc(i.states[0])} <span class="muted2">(${esc(i.bucketName)} · ${money(i.total)})</span><span class="x" data-rmcart="${ix}"><i class="ti ti-x"></i></span></div>`).join("")}</div>` : `<div class="ag-empty"><span class="circ"><i class="ti ti-shopping-cart"></i></span><p>Your cart is empty — add states to get started.</p></div>`}
+          <div class="ag-ctotal"><span class="l">Total</span><span class="a">${money(cartTotal)}</span></div>
+          <button class="ag-gocart" ${a.cart.length ? "" : "disabled"} id="ag-gocart">Go to Cart <i class="ti ti-arrow-right"></i></button></section>
+        <section class="ag-card"><div class="ag-ch"><i class="ti ti-map"></i> Lead Concentration by State</div>
+          <div class="ag-mapbody"><div class="ag-mapwrap">${usTileMap(a.avail)}
+            <div class="ag-legend"><div class="ticks"><span>High</span><span></span><span>Low</span></div><div class="scale"></div></div></div>
+            <p class="ag-mapnote">Lead volume by state · brighter = higher concentration</p></div></section>
+      </div>
+    </div></div>`;
+  wireAged(c);
+}
+function wireAged(c) {
+  $("#ag-type")?.addEventListener("change", async e => { AGED.lt = CATALOG.find(t => t.id === e.target.value) || AGED.lt; AGED.bucketId = ""; AGED.avail = {}; AGED.qty = {}; AGED.buckets = await agBuckets(AGED.lt.id); renderAged(); });
+  $("#ag-bucket")?.addEventListener("change", async e => {
+    AGED.bucketId = e.target.value; AGED.avail = {};
+    if (AGED.bucketId) { try { (await sb.rpc("aged_availability", { p_lead_type: AGED.lt.id, p_tier: AGED.bucketId })).data?.forEach(r => { AGED.avail[String(r.state).trim().toUpperCase()] = r.available; }); } catch { } }
+    renderAged();
+  });
+  c.querySelectorAll("[data-qst]").forEach(inp => inp.addEventListener("change", () => { AGED.qty[inp.dataset.qst] = parseInt(inp.value) || 0; }));
+  c.querySelectorAll("[data-addst]").forEach(b => b.addEventListener("click", () => agAddState(b.dataset.addst)));
+  c.querySelectorAll("[data-rmcart]").forEach(x => x.addEventListener("click", () => { AGED.cart.splice(+x.dataset.rmcart, 1); renderAged(); }));
+  $("#ag-gocart")?.addEventListener("click", () => { AGED.cart.forEach(i => CART.push(i)); AGED.cart = []; updateCartCount(); go("cart"); });
+}
+function agAddState(code) {
+  const bucket = AGED.buckets.find(b => b.id === AGED.bucketId); if (!bucket) return;
+  const av = AGED.avail[code] || 0;
+  let qty = parseInt(document.querySelector(`[data-qst="${code}"]`)?.value) || 0;
+  if (qty < AG_MIN) { toast(`Minimum ${AG_MIN} leads per state.`); return; }
+  if (qty > av) { toast(`Only ${av} available in ${code} — adding ${av}.`); qty = av; }
+  const price = Number(bucket.price) || 0;
+  AGED.cart.push({ name: `${AGED.lt.name} · ${bucket.name}`, channel: "Aged", lead_type_id: AGED.lt.id, tier_id: bucket.id, quality: null, bucketName: bucket.name, qty, price, total: qty * price, states: [code], days: [], maxPerDay: null, sub: false, deliver: "Portal only", delivery: {}, notif: {}, thankyou: {} });
+  AGED.qty[code] = ""; renderAged();
 }
 
 // ---------------------------------------------------------------- lead orders (list)
