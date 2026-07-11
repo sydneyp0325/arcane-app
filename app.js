@@ -429,6 +429,7 @@ function renderApp() {
       </aside>
       <div class="main">
         <header class="topbar">
+          <button class="nav-burger" id="nav-burger" aria-label="Menu"><i class="ti ti-menu-2"></i></button>
           <span class="chip">AP Today <b class="num" id="ap-today">$0</b> <span class="dim">/ <span id="ap-today-n">0</span> Closed</span></span>
           <span class="chip">AP MTD <b class="num" id="ap-mtd">$0</b> <span class="dim">/ <span id="ap-mtd-n">0</span> Closed</span></span>
           <span class="search"><i class="ti ti-search"></i>Search leads…</span>
@@ -444,9 +445,13 @@ function renderApp() {
         </header>
         <div class="content" id="content"></div>
       </div>
+      <div class="nav-backdrop" id="nav-backdrop"></div>
     </div>`;
   document.querySelectorAll("[data-route]").forEach(el => el.addEventListener("click", () => go(el.dataset.route)));
   $("#signout").addEventListener("click", signOut);
+  const _appEl = document.querySelector(".app");
+  $("#nav-burger")?.addEventListener("click", () => _appEl.classList.toggle("nav-open"));
+  $("#nav-backdrop")?.addEventListener("click", () => _appEl.classList.remove("nav-open"));
   $("#imp-exit")?.addEventListener("click", exitImpersonation);
   $("#av-check")?.addEventListener("change", toggleAvailability);
   $("#dev-back")?.addEventListener("click", exitAgency);
@@ -464,6 +469,7 @@ function updateCartCount() { const el = $("#cart-count"); if (!el) return; el.te
 function go(route) {
   ROUTE = route;
   closeLeadPanel();
+  document.querySelector(".app")?.classList.remove("nav-open");
   document.querySelectorAll(".nav-i").forEach(el => el.classList.toggle("active", el.dataset.route === route));
   const c = $("#content");
   if (route === "dashboard") return loadDashboard();
